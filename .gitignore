@@ -19,3 +19,9 @@
 # OS generated
 .DS_Store
 Thumbs.db
+
+# Claude Code internal worktrees
+.claude/worktrees/
+
+# VSCode (선택적)
+.vscode/

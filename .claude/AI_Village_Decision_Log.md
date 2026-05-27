@@ -2,7 +2,7 @@
 
 > 이 문서는 기획 과정에서 내려진 모든 결정과 방향을 기록한 참고 문서입니다.
 > "왜 이렇게 만들었는가"를 언제든 돌아볼 수 있도록 작성되었습니다.
-> 최종 수정: 2026-05-27
+> 최종 수정: 2026-05-28
 
 ---
 
@@ -325,5 +325,113 @@ float loyalty            // 충성도 0~100 (현재는 100 고정)
 
 ---
 
+---
+
+## 12. Week 3 — A* 패키지 불일치 해결 결정
+
+**날짜:** 2026-05-28
+
+### 문제
+설치된 패키지가 Aron Granberg의 "A* Pathfinding Project"가 아닌 "AStar 2D Grid Pathfinding"이었음.
+`using Pathfinding;`, `Seeker`, `Path` 클래스가 존재하지 않아 CS0246 컴파일 에러 발생.
+
+### 해결 결정
+| 항목 | 결정 |
+|------|------|
+| 패키지 교체 여부 | 교체하지 않고 설치된 패키지 API에 맞게 코드 재작성 |
+| 새 패키지 API | `AStarPathfinding.GeneratePath(startX, startY, goalX, goalY, bool[,])` → `(int,int)[]` 반환 |
+| 그리드 관리 | 별도 `PathfindingGrid` 싱글톤 신설 — 60x60 맵, WorldToGrid/GridToWorld 변환 담당 |
+| 비동기 처리 | `async Task` + `CancellationTokenSource` — 이전 경로 요청 취소 후 새 요청 시작 (Race Condition 방지) |
+| 도착 판정 최적화 | `Vector3.Distance` 대신 제곱 거리 비교 (`ARRIVAL_THRESHOLD_SQ = 0.04f`) |
+| Update 비용 절감 | `enabled = (newState == UnitState.Moving)` — Moving이 아니면 Update 비활성화 |
+
+### 주요 교훈
+- `AIUnit.Awake()`에서 `enabled = false` 설정 시 파생 클래스의 `Start()`가 호출되지 않음
+  → Week 4에서 발견, Awake의 enabled 조작 제거로 해결
+
+---
+
+## 13. Week 4 — GathererFSM 설계 결정
+
+**날짜:** 2026-05-28
+
+### FSM 타이머 방식 결정
+| 옵션 | 결정 | 이유 |
+|------|------|------|
+| Update 기반 타이머 | ❌ 미채택 | AIUnit이 Moving이 아닐 때 `enabled=false` → Update 실행 안 됨 |
+| **Coroutine 기반 타이머** | ✅ 채택 | `enabled=false`여도 코루틴은 계속 실행, 기반 클래스 수정 불필요 |
+
+### OnIdle 재진입 방지
+- 문제: `OnArrival()`이 `OnReachDestination()` + `OnIdle()`을 연속 호출 → 채집 시작 직후 새 노드 탐색 발동
+- 해결: `_isInGatherCycle` 플래그 — 사이클 중간이면 `OnIdle()` 무시
+
+### ResourceNode 자동 등록
+- 기존: 수동 등록 필요
+- 변경: `ResourceNode.Start()`에서 `ResourceManager.RegisterNode(this)` 자동 호출
+- 이유: `Start()`는 모든 `Awake()` 후 실행 → GameManager 초기화 완료 보장
+
+---
+
+## 14. Week 5 — MessageBus 설계 결정
+
+**날짜:** 2026-05-28
+
+### IMessageBus 인터페이스 이동
+- 기존: `ResourceType.cs` 내 `AIVillage.Resources` 네임스페이스
+- 변경: 독립 파일 `IMessageBus.cs`, `AIVillage.Core` 네임스페이스로 이동
+- 이유: `MessageBus` 구현체가 Core에 있고, ResourceNode는 이미 `using AIVillage.Core` 보유
+
+### Subscribe 추가
+- 기존 IMessageBus: `Publish` 메서드만 정의
+- 변경: `Subscribe`, `Unsubscribe`, `Publish` 3개 메서드로 확장
+- 이유: 외부 소비자(GameManager 등)가 이벤트 구독에 인터페이스 사용 가능
+
+### Publish 안전성
+- `list.ToArray()` 스냅샷 순회 채택
+- 이유: 핸들러 내부에서 `Unsubscribe` 호출 시 컬렉션 수정 예외 방지
+
+### 의존성 주입 타이밍
+- `ResourceManager.RegisterNode()` 시점에 `node.InjectMessageBus(GameManager.Instance.MessageBus)` 호출
+- 이유: GameManager.Awake → CacheComponents에서 MessageBus 이미 생성 → 안전한 주입 타이밍 보장
+
+---
+
+## 15. Week 6 — BuilderFSM + BuildingManager 설계 결정
+
+**날짜:** 2026-05-28
+
+### Building 클래스 계층
+- `Building` — 기반 클래스 (Unbuilt/UnderConstruction/Built 상태 + 예약 시스템)
+- `House` — Building 상속, 완공 시 `GameManager.BasePosition` 자동 설정
+- 이유: Gatherer의 ResourceNode 패턴과 동일하게 유지 → 코드 일관성 확보
+
+### 자원 차감 타이밍
+- **결정: Builder가 건설지 도착 시** 두 자원(나무+돌) 동시 확인 후 차감
+- 이유: 이동 전 확인 시 이동 중 자원 상태 변화로 인한 오류 가능성 → 도착 시점이 안전
+- 안전장치: 두 자원 모두 충분한지 먼저 확인 후 일괄 차감 (부분 차감 방지)
+
+### BuildRoutine 내 ResetCycle 호출 문제
+- 문제: 코루틴 내부에서 `ResetCycle()` 호출 시 `StopCoroutine(자기 자신)` 실행
+- 해결: 코루틴 종료 시 필드 직접 초기화 후 `SearchAndBuild()` 직접 호출
+
+---
+
+## 16. Week 7 — PopulationManager + 자동 스폰 설계 결정
+
+**날짜:** 2026-05-28
+
+### 인구 등록 방식
+- `AIUnit.Start()` — `virtual` 메서드로 추가, PopulationManager 자동 등록
+- `AIUnit.OnDestroy()` — 유닛 소멸 시 자동 해제
+- 파생 클래스(`Gatherer`, `Builder`)는 `base.Start()` 호출로 등록 연결
+- 이유: 모든 AIUnit 파생 클래스가 자동 등록 — 수동 연결 불필요
+
+### 스폰 쿨다운 필요성
+- 문제: Tick(0.5s)마다 `CheckAutoSpawn()` 실행 → 자원 충분 시 매 Tick 스폰 폭발
+- 해결: `_spawnCooldown = 5f` (Inspector 조정 가능) + `_lastSpawnTime` 타임스탬프 비교
+- 이유: `Time.time - _lastSpawnTime < _spawnCooldown` 조건으로 최소 간격 보장
+
+---
+
 *이 문서는 새로운 결정이 내려질 때마다 업데이트됩니다.*
-*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0)*
+*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0) → 2026-05-28 Week 3~7 구현 결정 추가*

@@ -1,7 +1,7 @@
 # 📋 AI Village — 게임 기획 및 개발 명세서
 
-> **문서 버전:** v2.2.0 (설계 공백 전수 보완 — 개발 착수 가능 상태)
-> **최종 수정:** 2026-05-27
+> **문서 버전:** v2.3.0 (Week 1~7 구현 완료 반영)
+> **최종 수정:** 2026-05-28
 > **장르:** 2D 탑다운 AI 자율 에이전트 시뮬레이션
 > **엔진:** Unity 2D (URP)
 > **플랫폼:** PC (Steam)
@@ -417,12 +417,12 @@ AI: 조건 충족이면 접근 (위험 탐색)
 
 | ID | 내용 | 수준 | 해결 방안 | 상태 |
 |----|------|------|----------|------|
-| R-001 | AI 메시지 통신 | 🔴 | MessageBus 싱글톤 | ⏳ |
-| R-002 | 성능 (유닛 수) | 🟡 | Tick 방식 FSM (0.1초마다 판단), 최대 30 | ⏳ |
-| R-003 | 순환 데드락 | 🔴 | Gatherer 할당 시 예약 시스템으로 방지 | ⏳ |
-| R-004 | FSM 엣지케이스 | 🟡 | AnyState → Idle 폴백 전환 | 🔄 |
-| R-005 | A* 경로탐색 | 🟡 | A* Pathfinding Project (무료 에셋) 사용 | ⏳ |
-| R-006 | 몬스터 추적 해제 | 🟢 | 거리 8타일 초과 or 기지 경계 도달 시 추적 포기 | ⏳ |
+| R-001 | AI 메시지 통신 | 🔴 | MessageBus 싱글톤 | ✅ Week 5 완료 |
+| R-002 | 성능 (유닛 수) | 🟡 | Tick 방식 FSM + enabled 토글로 Update 비용 절감 | ✅ Week 3 적용 |
+| R-003 | 순환 데드락 | 🔴 | TryReserve + CancellationToken으로 Race Condition 방지 | ✅ Week 4 완료 |
+| R-004 | FSM 엣지케이스 | 🟡 | OnPathFailed → CancelInvoke + 재탐색 폴백 | ✅ Week 4 적용 |
+| R-005 | A* 경로탐색 | 🟡 | AStar 2D Grid Pathfinding 패키지 + PathfindingGrid 싱글톤 | ✅ Week 3 완료 |
+| R-006 | 몬스터 추적 해제 | 🟢 | 거리 8타일 초과 or 기지 경계 도달 시 추적 포기 | ⏳ Week 8 예정 |
 
 ---
 
@@ -462,18 +462,18 @@ SaveManager.cs      (빈 클래스 — v1.0 세이브/로드)
 
 ## 12. 개발 착수 순서 (v0.1 기준, 8~10주)
 
-| 주차 | 목표 | 완료 기준 |
-|------|------|---------|
-| Week 1 | ResourceNode.cs + 기본 씬 세팅 | 나무 클릭 시 콘솔에 "수집됨" 출력 |
-| Week 2 | GameManager + ResourceManager | 시작 자원 세팅, 노드 목록 관리 |
-| Week 3 | AIUnit 기본 이동 (A* 연동) | Gatherer 1개가 ResourceNode로 이동 |
-| Week 4 | GathererFSM (Idle/Moving/Gathering/Returning) | Gatherer가 수집 → 귀환 반복 |
-| Week 5 | MessageBus + 다중 Gatherer + 예약 시스템 | Gatherer 3개가 겹치지 않고 분산 채집 |
-| Week 6 | BuilderFSM + BuildingManager | Builder가 House 건설 완료 |
-| Week 7 | PopulationManager + 유닛 생성 | 자원 충족 시 Gatherer 자동 생성 |
-| Week 8 | ThreatManager + Monster + Fleeing 상태 | 몬스터 등장 시 AI 도주 |
-| Week 9 | DangerRegistry + 플레이어 지시 2가지 | 위험 파견 거부 로직 동작 확인 |
-| Week 10 | Town Hall + 승리/패배 조건 + 폴리싱 | 첫 번째 플레이어블 빌드 완성 |
+| 주차 | 목표 | 완료 기준 | 상태 |
+|------|------|---------|------|
+| Week 1 | ResourceNode.cs + 기본 씬 세팅 | 나무 클릭 시 콘솔에 "수집됨" 출력 | ✅ 완료 |
+| Week 2 | GameManager + ResourceManager | 시작 자원 세팅, 노드 목록 관리 | ✅ 완료 |
+| Week 3 | AIUnit 기본 이동 (A* 연동) | Gatherer 1개가 ResourceNode로 이동 | ✅ 완료 |
+| Week 4 | GathererFSM (Idle/Moving/Gathering/Returning) | Gatherer가 수집 → 귀환 반복 | ✅ 완료 |
+| Week 5 | MessageBus + 다중 Gatherer + 예약 시스템 | Gatherer 3개가 겹치지 않고 분산 채집 | ✅ 완료 |
+| Week 6 | BuilderFSM + BuildingManager | Builder가 House 건설 완료 | ✅ 완료 |
+| Week 7 | PopulationManager + 유닛 생성 | 자원 충족 시 Gatherer 자동 생성 | ✅ 완료 |
+| Week 8 | ThreatManager + Monster + Fleeing 상태 | 몬스터 등장 시 AI 도주 | ⏳ 예정 |
+| Week 9 | DangerRegistry + 플레이어 지시 2가지 | 위험 파견 거부 로직 동작 확인 | ⏳ 예정 |
+| Week 10 | Town Hall + 승리/패배 조건 + 폴리싱 | 첫 번째 플레이어블 빌드 완성 | ⏳ 예정 |
 
 ---
 
