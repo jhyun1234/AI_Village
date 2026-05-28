@@ -76,6 +76,10 @@ namespace AIVillage.Core
         [SerializeField, Tooltip("연속 스폰 방지 쿨다운 (초). 최소 1Tick 이상 권장.")]
         private float _spawnCooldown = 5f;
 
+        [Header("위협 감지 (GDD §8)")]
+        [Tooltip("유닛 주변 위협 감지 반경 (월드 단위). GDD: 3f (3타일)")]
+        [SerializeField] private float _threatDetectionRadius = 3f; // 기획서 수치: 위협 감지 반경 3f
+
         #endregion
 
         #region Private State
@@ -115,6 +119,9 @@ namespace AIVillage.Core
         /// <summary>PopulationManager 참조 (GameManager.Instance.PopulationManager 로 접근).</summary>
         public PopulationManager PopulationManager { get; private set; }
 
+        /// <summary>ThreatManager 참조 (GameManager.Instance.ThreatManager 로 접근).</summary>
+        public ThreatManager ThreatManager { get; private set; }
+
         #endregion
 
         #region Initialization
@@ -140,6 +147,10 @@ namespace AIVillage.Core
             PopulationManager = GetComponent<PopulationManager>();
             if (PopulationManager == null)
                 PopulationManager = gameObject.AddComponent<PopulationManager>();
+
+            ThreatManager = GetComponent<ThreatManager>();
+            if (ThreatManager == null)
+                ThreatManager = gameObject.AddComponent<ThreatManager>();
         }
 
         /// <summary>Start에서 MessageBus 이벤트를 구독한다 (Awake 시점에는 MessageBus가 미준비).</summary>
@@ -198,11 +209,12 @@ namespace AIVillage.Core
 
         /// <summary>
         /// 매 Tick 호출 진입점.
-        /// 유닛 자동 생성 체크 및 승리/패배 조건 체크를 순서대로 실행한다.
+        /// 유닛 자동 생성 체크 → 위협 감지 체크 → 승리/패배 조건 체크 순서로 실행한다.
         /// </summary>
         private void OnTick()
         {
             CheckAutoSpawn();
+            CheckThreatForAllUnits(); // Week 8: 몬스터 위협 감지
             CheckWinLoseCondition();
         }
 
@@ -226,6 +238,39 @@ namespace AIVillage.Core
 
             Instantiate(_gathererPrefab, spawnPos, Quaternion.identity);
             Debug.Log($"[GameManager] Gatherer 스폰 — 인구: {PopulationManager.CurrentPop}/{PopulationManager.MaxPop}");
+        }
+
+        #endregion
+
+        #region Threat Detection (Week 8)
+
+        /// <summary>
+        /// 매 Tick 모든 살아있는 유닛의 주변에 몬스터가 있는지 확인하고,
+        /// 위협이 감지되면 해당 유닛에게 SetFleeing()을 호출한다.
+        ///
+        /// 스냅샷 순회를 사용하여 SetFleeing() 내부에서 _units가 변경되어도 안전하다.
+        /// </summary>
+        private void CheckThreatForAllUnits()
+        {
+            if (ThreatManager == null || PopulationManager == null) return;
+
+            // 스냅샷: foreach 순회 중 유닛 추가/제거가 발생해도 안전
+            AIVillage.Units.AIUnit[] snapshot = PopulationManager.GetAllUnitsSnapshot();
+
+            foreach (AIVillage.Units.AIUnit unit in snapshot)
+            {
+                // 파괴된 유닛은 건너뜀 (OnDestroy 이전에 스냅샷에 포함된 경우)
+                if (unit == null) continue;
+
+                Vector2 unitPos = unit.transform.position;
+
+                // 이 유닛 주변 _threatDetectionRadius 이내에 몬스터가 있으면 도주 지시
+                AIVillage.Units.Monster nearest =
+                    ThreatManager.GetNearestMonster(unitPos, _threatDetectionRadius);
+
+                if (nearest != null)
+                    unit.SetFleeing();
+            }
         }
 
         #endregion

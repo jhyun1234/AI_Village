@@ -1,7 +1,7 @@
 # 📝 AI Village — 개발 진행 로그
 
 > 세션별 개발 내용, 트러블슈팅, 구현 완료 파일 목록을 기록한 문서.
-> 최종 수정: 2026-05-28
+> 최종 수정: 2026-05-29
 
 ---
 
@@ -30,14 +30,16 @@ Assets/Scripts/
 │   ├── PathfindingGrid.cs        Week 3  — 60x60 그리드 싱글톤, 좌표 변환
 │   ├── MessageBus.cs             Week 5  — string 채널 이벤트 버스 싱글톤
 │   ├── BuildingManager.cs        Week 6  — 건물 등록/관리, 미완공 건설지 조회
-│   └── PopulationManager.cs      Week 7  — 인구 추적, HasRoom 체크
+│   ├── PopulationManager.cs      Week 7  — 인구 추적, HasRoom 체크
+│   └── ThreatManager.cs          Week 8  — Monster 등록/해제, GetNearestMonster() API
 ├── Data/
 │   ├── UnitState.cs              Week 3  — FSM 상태 열거형 (6개)
 │   └── IMessageBus.cs            Week 5  — 이벤트 버스 인터페이스
 ├── Units/
 │   ├── AIUnit.cs                 Week 3  — 공통 기반 클래스, A* 비동기 이동, FSM
 │   ├── Gatherer.cs               Week 4  — 자원 수집 FSM (Idle→Moving→Gathering→Returning)
-│   └── Builder.cs                Week 6  — 건설 FSM (Idle→Moving→Building→Idle)
+│   ├── Builder.cs                Week 6  — 건설 FSM (Idle→Moving→Building→Idle)
+│   └── Monster.cs                Week 8  — 독립 MonoBehaviour, Patrolling/Chasing/Attacking FSM
 ├── Buildings/
 │   ├── Building.cs               Week 6  — 건물 기반 클래스, 예약/건설 상태 관리
 │   └── House.cs                  Week 6  — 완공 시 BasePosition 설정
@@ -181,12 +183,83 @@ Assets/Scripts/
 
 ---
 
-## 다음 단계 (Week 8~10 예정)
+### ✅ Week 8 — ThreatManager + Monster + Fleeing (완료)
+
+**구현 내용:**
+- `ThreatManager.cs` 신규: Monster 등록/해제, `GetNearestMonster(Vector2, float)` API
+  - 순회 전 `RemoveAll(m => m == null)` 방어 처리
+- `Monster.cs` 신규: 독립 MonoBehaviour (AIUnit 상속 없음), Vector3.MoveTowards 이동
+  - `MonsterState` enum: Patrolling / Chasing / Attacking
+  - 히스테리시스(_attackRange * 1.2f)로 Chasing ↔ Attacking Flicker 방지
+  - `ResetToNearestWaypoint()`: 추적 포기 후 가장 가까운 웨이포인트부터 순찰 재개
+  - `OnDrawGizmosSelected()`: 감지/공격/추적포기 반경 시각화
+- `AIUnit.cs` 수정:
+  - `SetState` private → protected, enabled 조건에 `Fleeing` 추가
+  - `SetFleeing()` public: 재진입 방지 + 기지 반경 내 체크 + OnFleeingEnter 콜백
+  - `TakeDamage(float)` public: Destroy 지연 재진입 방어 포함
+  - `UpdateFleeing()`: 기지 도달 판정 + 체력 회복 + 직선 이동 폴백(_useDirectMoveToCamp)
+  - `OnFleeingEnter()` abstract, `OnFleeingExit()` virtual 콜백 추가
+  - `SetDestination()`: Fleeing 중 Moving으로 덮어쓰지 않는 분기 추가
+- `Gatherer.cs` 수정: `OnFleeingEnter/Exit` 구현 (코루틴 중단, 노드 예약 해제, 재탐색 재개)
+- `Builder.cs` 수정: `OnFleeingEnter/Exit` 구현 (코루틴 중단, 건물 예약 해제, 재탐색 재개)
+- `GameManager.cs` 수정:
+  - `ThreatManager` 프로퍼티 + `CacheComponents()`에 자동 추가
+  - `CheckThreatForAllUnits()`: Tick마다 snapshot 순회로 위협 감지 → `SetFleeing()` 호출
+  - `_threatDetectionRadius = 3f` Inspector 노출
+- `PopulationManager.cs` 수정:
+  - `GetAllUnitsSnapshot()`: `_snapshotBuffer` + `_isDirty` 캐시 패턴으로 GC 최적화
+
+**PR 리뷰 수정 내역:**
+- [Critical] Monster.UpdateAttacking: `_target == null` 시 TransitionToChasing → TransitionToPatrolling 수정
+- [Warning] AIUnit.UpdateFleeing: `_pathCts?.Dispose() + _pathCts = null` 누락 추가
+- [Warning] PopulationManager.GetAllUnitsSnapshot: ToArray() → _snapshotBuffer 캐시로 GC 최적화
+- [Suggestion] Monster.AttackRoutine: `_target?.name` → `_target.name`
+- [Suggestion] AIUnit.TakeDamage: Destroy 지연 방어 주석 추가
+
+**런타임 버그 수정 (테스트 후 발견):**
+
+**Bug 1: Gatherer-Monster 겹침 반복 루프**
+- 현상: Gatherer가 도망 후 OnFleeingExit()에서 SearchAndGo() 호출 시 위험 노드로 즉시 복귀 → 몬스터와 계속 겹침
+- 원인: 노드 위치의 몬스터만 체크했고, 기지까지 쫓아온 몬스터(Gatherer 자신 주변)는 체크하지 않았음
+- 수정: `SearchAndGo()`에 두 가지 안전 체크 추가
+  1. `GetNearestMonster(transform.position, _safeNodeRadius)` — Gatherer 자신 주변 몬스터 체크
+  2. `GetNearestMonster(node.transform.position, _safeNodeRadius)` — 목적지 노드 주변 몬스터 체크
+  → 둘 중 하나라도 있으면 `_retryDelay`(2초) 후 재시도
+
+**Bug 2: Monster 기지 경계 진동 현상 (Oscillation)**
+- 현상: Gatherer가 House(기지) 안에 있으면 Monster가 감지→추적 시작→IsTargetNearBase() 판정→Patrolling 복귀→즉시 재감지 루프 반복, 몬스터가 웨이포인트와 기지 사이에서 떨림
+- 원인: UpdatePatrolling() 감지 단계에서 기지 안 유닛도 추적 시도했고, 추적 시작 후에야 IsTargetNearBase()로 포기 판정이 이루어짐
+- 수정: `UpdatePatrolling()`의 감지 단계에서 `IsUnitNearBase(unit)` 사전 필터링 추가
+  → 기지 안전 구역 내 유닛은 처음부터 추적 대상에서 제외
+
+**_baseAbandonRadius Inspector 노출 (테스트 후 사용자 요청):**
+- 기존: `private const float BASE_ABANDON_RADIUS = 5f` (코드 수정 없이 조정 불가)
+- 변경: `[SerializeField] private float _baseAbandonRadius = 5f` (Inspector에서 Monster별 조정 가능)
+- 위치: Monster Inspector의 "기지 안전 구역 설정" 헤더 아래
+- 주의: `_detectionRange`(3f)보다 크게 유지해야 감지/포기 루프 방지 조건이 성립함
+
+**핵심 설계 결정:**
+- Fleeing 감지: GameManager Tick(0.5s) 기반 ThreatManager 폴링 (Physics2D.OverlapCircle 매 프레임 대신)
+- Monster는 AIUnit 상속 없음 — 단순 MoveTowards로 성능 예산 절약
+- Fleeing 경로 실패 시 직선 이동 폴백 (_useDirectMoveToCamp) — 생존 우선
+- 기지 안전 구역: UpdatePatrolling 감지 단계 + UpdateChasing 추적 포기 단계 양쪽에서 IsUnitNearBase() 체크 (이중 방어)
+
+**Unity 에디터 설정 (테스트 전 필수):**
+1. GameManager GameObject에 ThreatManager 자동 추가됨 (CacheComponents)
+2. Monster 프리팹: Collider2D 추가, _waypoints에 씬 Transform 2~3개 연결
+3. AIUnit(Gatherer/Builder) 프리팹에 'Unit' 레이어 지정
+4. Monster Inspector의 _unitLayerMask에 'Unit' 레이어 선택
+5. Monster Inspector의 _baseAbandonRadius: _detectionRange(3f)보다 크게 유지 (기본값 5f 권장)
+
+**테스트 결과:** ✅ Gatherer 도망/복귀 루프 정상, Monster 기지 경계 진동 없음, _baseAbandonRadius Inspector 조정 확인
+
+---
+
+## 다음 단계 (Week 9~10 예정)
 
 | 주차 | 목표 | 핵심 작업 |
 |------|------|---------|
-| Week 8 | ThreatManager + Monster + Fleeing | 몬스터 순찰/추적 FSM, AIUnit Fleeing 상태 구현 |
-| Week 9 | DangerRegistry + 플레이어 지시 | 위험 좌표 기록, 파견 거부 로직, PlayerController |
+| Week 9 | DangerRegistry + 플레이어 지시 2가지 | 위험 좌표 기록, 파견 거부 로직, PlayerController |
 | Week 10 | TownHall + 승리/패배 + 폴리싱 | CheckWinLoseCondition, UI, 첫 플레이어블 빌드 |
 
 ---
