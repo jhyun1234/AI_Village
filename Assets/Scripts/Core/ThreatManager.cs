@@ -46,7 +46,9 @@ namespace AIVillage.Core
             if (_monsters.Contains(monster)) return;
 
             _monsters.Add(monster);
+#if UNITY_EDITOR
             Debug.Log($"[ThreatManager] 몬스터 등록: '{monster.name}' | 총 {_monsters.Count}마리");
+#endif
         }
 
         /// <summary>
@@ -56,7 +58,11 @@ namespace AIVillage.Core
         public void UnregisterMonster(Monster monster)
         {
             if (_monsters.Remove(monster))
+            {
+#if UNITY_EDITOR
                 Debug.Log($"[ThreatManager] 몬스터 해제. 남은 몬스터: {_monsters.Count}마리");
+#endif
+            }
         }
 
         #endregion

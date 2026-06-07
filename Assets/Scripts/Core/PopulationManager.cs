@@ -60,7 +60,9 @@ namespace AIVillage.Core
             _units.Add(unit);
             // [PR Fix]: P-001 — 유닛 추가 시 더티 플래그 설정 → 다음 스냅샷 요청 시 버퍼 재구성
             _isDirty = true;
+#if UNITY_EDITOR
             Debug.Log($"[PopulationManager] 유닛 등록: {unit.name} | 인구: {_units.Count}/{_maxPopulation}");
+#endif
         }
 
         public void UnregisterUnit(AIUnit unit)
@@ -69,7 +71,9 @@ namespace AIVillage.Core
             {
                 // [PR Fix]: P-001 — 유닛 제거 시 더티 플래그 설정 → 다음 스냅샷 요청 시 버퍼 재구성
                 _isDirty = true;
+#if UNITY_EDITOR
                 Debug.Log($"[PopulationManager] 유닛 해제: {unit.name} | 인구: {_units.Count}/{_maxPopulation}");
+#endif
             }
         }
 

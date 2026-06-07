@@ -78,7 +78,9 @@ namespace AIVillage.Core
                 for (int x = 0; x < _width; x++)
                     _walkableMap[y, x] = true;
 
+#if UNITY_EDITOR
             Debug.Log($"[PathfindingGrid] {_width}x{_height} 그리드 초기화 완료. 원점: {_gridOrigin}");
+#endif
         }
 
         #endregion

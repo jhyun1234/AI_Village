@@ -144,11 +144,13 @@ namespace AIVillage.Resources
         /// </summary>
         private void OnMouseDown()
         {
+#if UNITY_EDITOR
             Debug.Log(LOG_PREFIX +
                 $"[{gameObject.name}] Type={_resourceType} | State={_state} | " +
                 $"Amount={_currentAmount}/{_maxAmount} | " +
                 $"ReservedBy={(_reservedBy != null ? _reservedBy.name : "None")} | " +
                 $"RegenTimer={_regenTimer:F1}/{_regenDuration:F1}s");
+#endif
         }
 
         #endregion
@@ -246,7 +248,9 @@ namespace AIVillage.Resources
 
                 _messageBus?.Publish("resource.node.depleted", this);
 
+#if UNITY_EDITOR
                 Debug.Log(LOG_PREFIX + $"[{gameObject.name}] {_resourceType} 노드 고갈. {_regenDuration}초 후 재생성.");
+#endif
             }
 
             return gathered;
@@ -318,7 +322,9 @@ namespace AIVillage.Resources
 
             _messageBus?.Publish("resource.node.regenerated", this);
 
+#if UNITY_EDITOR
             Debug.Log(LOG_PREFIX + $"[{gameObject.name}] {_resourceType} 노드 재생성 완료.");
+#endif
         }
 
         #endregion

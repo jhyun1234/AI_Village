@@ -79,9 +79,9 @@ namespace AIVillage.Units
         [Tooltip("이 거리 이상 벌어지면 추적을 포기하고 순찰로 복귀. GDD: 8f")]
         [SerializeField] private float _chaseAbandonRange = 8f; // 기획서 수치: 추적 포기 거리 8f
 
-        [Header("기지 안전 구역 설정 (GDD §8-2)")]
-        [Tooltip("이 반경 내 유닛은 감지/추적하지 않는다. _detectionRange(3f)보다 크게 유지 권장. AIUnit._baseSafeWorldRadius와 값을 맞춰야 Gatherer가 기지 안에서 무시된다.")]
-        [SerializeField] private float _baseAbandonRadius = 5f;
+        [Header("체력 (GDD v0.2)")]
+        [Tooltip("최대 체력. Inspector에서 조정.")]
+        [SerializeField] private float _maxHp = 50f;
 
         [Header("순찰 설정")]
         [Tooltip("순환 순찰할 웨이포인트 배열. Inspector에서 Transform 할당.")]
@@ -95,13 +95,18 @@ namespace AIVillage.Units
         private AIUnit       _target;          // 현재 추적/공격 대상 유닛
         private int          _waypointIndex;   // 현재 순찰 웨이포인트 인덱스
         private Coroutine    _attackCoroutine; // 진행 중인 공격 코루틴
+        private float        _hp;              // 현재 체력 (Start()에서 _maxHp로 초기화)
 
         #endregion
 
         #region ── Unity Lifecycle ──
 
+        /// <summary>현재 체력. Warrior의 TakeDamage 후 null 체크 대신 이 값으로 판단 가능.</summary>
+        public float Hp => _hp;
+
         private void Start()
         {
+            _hp = _maxHp;
             // ThreatManager에 자동 등록. GameManager나 ThreatManager가 없으면 조용히 무시
             GameManager.Instance?.ThreatManager?.RegisterMonster(this);
 
@@ -130,6 +135,25 @@ namespace AIVillage.Units
                 case MonsterState.Attacking:
                     UpdateAttacking();
                     break;
+            }
+        }
+
+        /// <summary>
+        /// 피해를 받는다. HP가 0이 되면 ThreatManager에서 해제 후 파괴된다.
+        /// Warrior.AttackRoutine()에서 호출된다.
+        /// </summary>
+        public void TakeDamage(float amount)
+        {
+            if (_hp <= 0f) return;
+
+            _hp -= amount;
+            if (_hp <= 0f)
+            {
+                _hp = 0f;
+#if UNITY_EDITOR
+                Debug.Log($"[Monster] '{name}' 처치됨!");
+#endif
+                Destroy(gameObject);
             }
         }
 
@@ -305,21 +329,16 @@ namespace AIVillage.Units
         }
 
         /// <summary>
-        /// 임의의 유닛이 기지 반경 내부에 있는지 확인한다.
-        /// UpdatePatrolling 감지 단계에서 기지 안 유닛을 사전 필터링하는 데 사용한다.
+        /// 임의의 유닛이 House 기지 안전 구역 내부에 있는지 확인한다.
+        /// 안전 구역 반경은 House Inspector의 _safeZoneRadius 값이며
+        /// GameManager.RegisterSafeZone()을 통해 등록된다.
         /// </summary>
         private bool IsUnitNearBase(AIUnit unit)
         {
             if (unit == null) return false;
-
             GameManager gm = GameManager.Instance;
             if (gm == null) return false;
-
-            Vector2 basePos = gm.BasePosition;
-            float dx = unit.transform.position.x - basePos.x;
-            float dy = unit.transform.position.y - basePos.y;
-
-            return (dx * dx + dy * dy) <= _baseAbandonRadius * _baseAbandonRadius;
+            return gm.IsInSafeZone(unit.transform.position);
         }
 
         #endregion
@@ -336,7 +355,15 @@ namespace AIVillage.Units
             if (_target == null)
             {
                 StopAttackCoroutine();
-                // [PR Fix]: R-001 — 타겟이 null이면 Chasing이 아닌 Patrolling으로 전환 (추적할 대상이 없으므로 순찰 복귀)
+                TransitionToPatrolling();
+                return;
+            }
+
+            // ── 타겟이 기지 안전 구역 진입 시 공격 중단 ──
+            // UpdateChasing에서 체크하지만, Attacking 진입 후 타겟이 기지 안으로 들어온 경우도 처리
+            if (IsTargetNearBase())
+            {
+                StopAttackCoroutine();
                 TransitionToPatrolling();
                 return;
             }
@@ -373,8 +400,10 @@ namespace AIVillage.Units
 
                 // 타겟에게 피해 적용 (AIUnit.TakeDamage)
                 _target.TakeDamage(_attackDamage);
+#if UNITY_EDITOR
                 // [PR Fix]: R-003 — null 체크 직후이므로 ?. 불필요. _target.name 으로 직접 참조
                 Debug.Log($"[Monster] '{name}' → '{_target.name}' 에게 {_attackDamage} 피해!");
+#endif
             }
         }
 
@@ -401,14 +430,18 @@ namespace AIVillage.Units
             _target       = null;
             _currentState = MonsterState.Patrolling;
             ResetToNearestWaypoint();
+#if UNITY_EDITOR
             Debug.Log($"[Monster] '{name}' → Patrolling 복귀.");
+#endif
         }
 
         /// <summary>Chasing 상태로 전환한다.</summary>
         private void TransitionToChasing()
         {
             _currentState = MonsterState.Chasing;
+#if UNITY_EDITOR
             Debug.Log($"[Monster] '{name}' → Chasing: '{_target?.name}'");
+#endif
         }
 
         /// <summary>
@@ -423,7 +456,9 @@ namespace AIVillage.Units
             if (_attackCoroutine == null)
                 _attackCoroutine = StartCoroutine(AttackRoutine());
 
+#if UNITY_EDITOR
             Debug.Log($"[Monster] '{name}' → Attacking: '{_target?.name}'");
+#endif
         }
 
         #endregion

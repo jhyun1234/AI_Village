@@ -54,7 +54,9 @@ namespace AIVillage.Core
             if (GameManager.Instance?.MessageBus != null)
                 node.InjectMessageBus(GameManager.Instance.MessageBus);
 
+#if UNITY_EDITOR
             Debug.Log($"[ResourceManager] 노드 등록: {node.name} ({node.GetResourceType()}) | 총 {_allNodes.Count}개");
+#endif
         }
 
         /// <summary>
@@ -76,7 +78,9 @@ namespace AIVillage.Core
                 return;
             }
 
+#if UNITY_EDITOR
             Debug.Log($"[ResourceManager] 노드 제거: {node.name} | 총 {_allNodes.Count}개");
+#endif
         }
 
         #endregion

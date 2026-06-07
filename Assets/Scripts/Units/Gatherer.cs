@@ -8,6 +8,7 @@
 // =============================================================================
 
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using AIVillage.Resources;
 using AIVillage.Core;
@@ -77,7 +78,9 @@ namespace AIVillage.Units
                 if (_gatheredAmount > 0 && _targetNode != null)
                 {
                     GameManager.Instance.AddResource(_targetNode.GetResourceType(), _gatheredAmount);
+#if UNITY_EDITOR
                     Debug.Log($"[Gatherer] '{name}' — {_targetNode.GetResourceType()} {_gatheredAmount} 반납 완료.");
+#endif
                 }
 
                 _targetNode?.ReleaseReservation();
@@ -126,6 +129,30 @@ namespace AIVillage.Units
         }
 
         /// <summary>
+        /// 위협 감지 시 호출 (GameManager.CheckThreatForAllUnits → OnThreatDetected 경유).
+        /// 위협 강도를 평가하여 CombatAlertQueue에 경보를 등록한 뒤 기본 도주 동작을 실행한다.
+        /// </summary>
+        public override void OnThreatDetected(Monster monster)
+        {
+            if (monster != null)
+            {
+                AIVillage.Core.ThreatLevel level = EvaluateThreatLevel(monster);
+                AIVillage.Core.CombatAlertQueue.Instance?.EnqueueAlert(monster, level, transform.position);
+            }
+            base.OnThreatDetected(monster); // SetFleeing() 호출
+        }
+
+        /// <summary>Monster HP 기준으로 위협 강도를 4단계로 평가한다.</summary>
+        private AIVillage.Core.ThreatLevel EvaluateThreatLevel(Monster monster)
+        {
+            float hp = monster.Hp;
+            if (hp >= 40f) return AIVillage.Core.ThreatLevel.AllNeeded;
+            if (hp >= 25f) return AIVillage.Core.ThreatLevel.VeryStrong;
+            if (hp >= 15f) return AIVillage.Core.ThreatLevel.Strong;
+            return AIVillage.Core.ThreatLevel.Weak;
+        }
+
+        /// <summary>
         /// Fleeing 상태 진입 시 호출 (AIUnit.SetFleeing → OnFleeingEnter 경유).
         /// 진행 중인 채집 작업을 모두 정리하여 깨끗한 상태로 도주를 시작한다.
         ///
@@ -158,7 +185,9 @@ namespace AIVillage.Units
             _isReturning     = false;
             _isInGatherCycle = false;
 
+#if UNITY_EDITOR
             Debug.Log($"[Gatherer] '{name}' — OnFleeingEnter: 채집 상태 정리 완료.");
+#endif
         }
 
         /// <summary>
@@ -167,7 +196,9 @@ namespace AIVillage.Units
         /// </summary>
         protected override void OnFleeingExit()
         {
+#if UNITY_EDITOR
             Debug.Log($"[Gatherer] '{name}' — OnFleeingExit: 채집 재개.");
+#endif
             SearchAndGo();
         }
 
@@ -176,57 +207,104 @@ namespace AIVillage.Units
         #region ── FSM Logic ──
 
         /// <summary>
-        /// 가장 가까운 비예약 노드를 찾아 이동을 시작한다.
-        /// 노드가 없으면 _retryDelay 후 재시도한다.
-        /// Fleeing 상태이거나 GameManager가 없으면 즉시 반환한다.
+        /// Week 9 개선: 전체 후보 노드를 순회하여 DangerRegistry 및 ThreatManager 이중 필터를
+        /// 통과한 노드 중 가장 가까운 노드를 선택하고 이동을 시작한다.
+        ///
+        /// 선택 알고리즘:
+        ///   1. 내 현재 위치 주변 직접 위협 체크 (출발 자체를 막는 가드)
+        ///   2. GetAvailableNodes()로 전체 후보 취득
+        ///   3. 각 노드에 대해:
+        ///      a. DangerRegistry 위험 구역 필터 (과거 위협 좌표 회피)
+        ///      b. ThreatManager 직접 위협 필터 (현재 몬스터 위치 회피)
+        ///   4. 필터 통과 노드 중 거리 최솟값으로 bestNode 결정
+        ///   5. 예약 성공 시 이동 시작
         /// </summary>
         private void SearchAndGo()
         {
+            // ── 가드 1: GameManager 참조 ──
             if (GameManager.Instance == null) return;
 
-            // ── Fleeing 상태에서는 탐색 금지 ──
-            // Invoke 지연으로 인해 OnFleeingEnter 이후에 이 메서드가 호출될 수 있음
+            // ── 가드 2: Fleeing 상태 ──
+            // Invoke 지연으로 인해 OnFleeingEnter 이후에도 이 메서드가 호출될 수 있음
             if (_currentState == UnitState.Fleeing) return;
 
-            ResourceNode node = GameManager.Instance.ResourceManager
-                .GetNearestAvailableNode(transform.position);
+            // ── 로컬 매니저 참조 캐싱 ──
+            ThreatManager  tm = GameManager.Instance.ThreatManager;
+            DangerRegistry dr = GameManager.Instance.DangerRegistry; // null 가능 (구형 씬 대비)
 
-            if (node == null)
-            {
-                // 사용 가능한 노드 없음 — 잠시 후 재탐색
-                Invoke(nameof(SearchAndGo), _retryDelay);
-                return;
-            }
-
-            // 내 현재 위치 주변에 몬스터가 있으면 이동 자체를 금지
-            // 기지까지 쫓아온 몬스터가 바로 옆에 있는데 바로 출발하는 루프 방지
-            ThreatManager tm = GameManager.Instance.ThreatManager;
+            // ── 가드 3: 내 현재 위치 주변 직접 위협 ──
+            // 기지까지 쫓아온 몬스터가 바로 옆에 있는 상태에서 출발하는 루프를 방지
             if (tm != null && tm.GetNearestMonster(transform.position, _safeNodeRadius) != null)
             {
                 Invoke(nameof(SearchAndGo), _retryDelay);
                 return;
             }
 
-            // 목적지 노드 주변에 몬스터가 있으면 해당 노드를 선택하지 않고 대기
-            if (tm != null && tm.GetNearestMonster(node.transform.position, _safeNodeRadius) != null)
+            // ── 후보 노드 전체 취득 (Week 9 변경 핵심) ──
+            // GetNearestAvailableNode() 대신 GetAvailableNodes()를 사용하여
+            // 모든 후보를 직접 평가한다.
+            IReadOnlyList<ResourceNode> candidates =
+                GameManager.Instance.ResourceManager.GetAvailableNodes();
+
+            if (candidates.Count == 0)
             {
                 Invoke(nameof(SearchAndGo), _retryDelay);
                 return;
             }
 
-            if (!node.TryReserve(gameObject))
+            // ── 후보 필터링 + 최근접 노드 선택 ──
+            ResourceNode bestNode = null;
+            float        bestDist = float.MaxValue;
+
+            foreach (ResourceNode candidate in candidates)
             {
-                // 예약 경합 발생 (멀티 Gatherer) — 짧게 재시도
+                if (candidate == null) continue;
+
+                Vector2 nodePos = candidate.transform.position;
+
+                // 필터 1: DangerRegistry 위험 구역 회피
+                // dr == null 이면 구형 씬이므로 이 필터를 건너뜀
+                if (dr != null && dr.IsDangerousArea(nodePos, _safeNodeRadius)) continue;
+
+                // 필터 2: ThreatManager 직접 위협 회피
+                if (tm != null && tm.GetNearestMonster(nodePos, _safeNodeRadius) != null) continue;
+
+                // 거리 비교 — 두 필터 통과 노드 중 가장 가까운 것 선택
+                float dist = Vector2.Distance(transform.position, nodePos);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestNode = candidate;
+                }
+            }
+
+            // ── 가드 4: 안전한 노드가 없음 ──
+            if (bestNode == null)
+            {
+#if UNITY_EDITOR
+                Debug.Log($"[Gatherer] '{name}' — 모든 노드가 위험 구역. {_retryDelay}초 후 재탐색.");
+#endif
+                Invoke(nameof(SearchAndGo), _retryDelay);
+                return;
+            }
+
+            // ── 예약 시도 ──
+            if (!bestNode.TryReserve(gameObject))
+            {
+                // 멀티 Gatherer 예약 경합 — 짧게 재시도
                 Invoke(nameof(SearchAndGo), 0.5f);
                 return;
             }
 
-            _targetNode      = node;
+            // ── 예약 성공 → 이동 시작 ──
+            _targetNode      = bestNode;
             _isReturning     = false;
             _isInGatherCycle = true;
 
-            Debug.Log($"[Gatherer] '{name}' — {node.GetResourceType()} 노드 '{node.name}' 예약. 이동 시작.");
-            SetDestination(node.transform.position);
+#if UNITY_EDITOR
+            Debug.Log($"[Gatherer] '{name}' — {bestNode.GetResourceType()} 노드 '{bestNode.name}' 예약. 이동 시작. (dist: {bestDist:F1})");
+#endif
+            SetDestination(bestNode.transform.position);
         }
 
         /// <summary>
@@ -255,12 +333,70 @@ namespace AIVillage.Units
             _isReturning     = true;
             _gatherCoroutine = null;
 
+#if UNITY_EDITOR
             Debug.Log($"[Gatherer] '{name}' — {_targetNode.GetResourceType()} {gathered} 채집 완료. 기지로 귀환.");
+#endif
 
             Vector2 home = GameManager.Instance.BasePosition;
             SetDestination(new Vector3(home.x, home.y, 0f));
         }
 
         #endregion
+
+#if UNITY_EDITOR
+        #region ── Editor Gizmos ──
+
+        /// <summary>
+        /// Scene 뷰에서 선택 시 Gatherer의 범위와 상태를 시각적으로 표시한다.
+        ///
+        /// 표시 항목:
+        ///   1. 상태 마커 (중심 점): 상태별 색상 (회색=Idle, 노랑=이동, 초록=채집, 하늘=귀환, 빨강=도주)
+        ///   2. 위험 회피 반경 (주황 원): 이 반경 내 Monster가 있으면 출발하지 않는다
+        ///   3. 목표 노드 선: 현재 이동 중인 노드까지 직선 표시
+        ///   4. 목표 노드 위험 반경 (주황 원): 노드 주변에도 동일 반경으로 안전 체크
+        /// </summary>
+        private void OnDrawGizmosSelected()
+        {
+            // ── 1. 현재 상태 색상 마커 ──
+            Color stateColor;
+            if (_currentState == UnitState.Fleeing)
+                stateColor = new Color(1f, 0.2f, 0.2f, 1f);   // 빨강: 도주
+            else if (_isReturning)
+                stateColor = new Color(0.2f, 0.9f, 1f, 1f);   // 하늘: 귀환
+            else if (_currentState == UnitState.Moving)
+                stateColor = new Color(1f, 0.95f, 0.1f, 1f);  // 노랑: 이동 중
+            else if (_isInGatherCycle)
+                stateColor = new Color(0.2f, 1f, 0.3f, 1f);   // 초록: 채집 중
+            else
+                stateColor = new Color(0.6f, 0.6f, 0.6f, 1f); // 회색: 대기
+
+            Gizmos.color = stateColor;
+            Gizmos.DrawSphere(transform.position, 0.18f);
+
+            // ── 2. 내 위치 기준 위험 회피 반경 ──
+            // SearchAndGo()에서 출발 전 이 반경 내 Monster 유무를 체크한다
+            Gizmos.color = new Color(1f, 0.6f, 0f, 0.12f); // 주황 채움
+            Gizmos.DrawSphere(transform.position, _safeNodeRadius);
+            Gizmos.color = new Color(1f, 0.6f, 0f, 0.85f); // 주황 테두리
+            Gizmos.DrawWireSphere(transform.position, _safeNodeRadius);
+
+            // ── 3. 목표 노드 표시 ──
+            if (_targetNode != null)
+            {
+                // Gatherer → 목표 노드 연결선
+                Gizmos.color = stateColor;
+                Gizmos.DrawLine(transform.position, _targetNode.transform.position);
+
+                // 목표 노드 주변 위험 회피 반경
+                // SearchAndGo()에서 노드 선택 전 이 반경 내 Monster 유무를 체크한다
+                Gizmos.color = new Color(1f, 0.6f, 0f, 0.06f); // 주황 채움 (연하게)
+                Gizmos.DrawSphere(_targetNode.transform.position, _safeNodeRadius);
+                Gizmos.color = new Color(1f, 0.6f, 0f, 0.5f);  // 주황 테두리
+                Gizmos.DrawWireSphere(_targetNode.transform.position, _safeNodeRadius);
+            }
+        }
+
+        #endregion
+#endif
     }
 }

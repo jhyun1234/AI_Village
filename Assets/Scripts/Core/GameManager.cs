@@ -60,8 +60,11 @@ namespace AIVillage.Core
         private int _victoryPopulation = 20; // GDD
 
         [Header("기지 위치")]
-        [SerializeField, Tooltip("House가 배치된 월드 좌표. Week 6에서 House가 설정한다.")]
+        [SerializeField, Tooltip("House 완공 시 자동으로 설정됨. 직접 수정 불필요.")]
         private Vector2 _basePosition = Vector2.zero;
+
+        [SerializeField, Tooltip("House 완공 시 자동으로 설정됨. 0이면 House 미건설 상태.")]
+        private float _safeZoneRadius = 0f;
 
         [Header("유닛 자동 스폰 (GDD Week 7)")]
         [SerializeField, Tooltip("자동 스폰할 Gatherer 프리팹. Inspector에서 할당 필요.")]
@@ -90,6 +93,10 @@ namespace AIVillage.Core
         private float _lastSpawnTime = -999f;
         private Coroutine _tickCoroutine;
 
+        // ── Week 10: 승리/패배 조건 상태 ──
+        private bool _townHallBuilt; // TownHall 완공 여부 — RegisterTownHall() 호출 시 true
+        private bool _hadUnits;      // 한 번이라도 유닛이 존재했는지 — 패배 조건 타이밍 보정용
+
         #endregion
 
         #region Public Properties
@@ -100,12 +107,15 @@ namespace AIVillage.Core
         /// <summary>현재 돌 보유량.</summary>
         public int CurrentStone => _currentStone;
 
-        /// <summary>기지(House) 월드 좌표. Week 6에서 House가 설정.</summary>
+        /// <summary>기지(House) 월드 좌표. House 완공 시 RegisterSafeZone()으로 자동 설정됨.</summary>
         public Vector2 BasePosition
         {
             get => _basePosition;
             set => _basePosition = value;
         }
+
+        /// <summary>기지 안전 구역 반경. House 완공 전에는 0f (안전 구역 없음).</summary>
+        public float SafeZoneRadius => _safeZoneRadius;
 
         /// <summary>ResourceManager 참조 (GameManager.Instance.ResourceManager 로 접근).</summary>
         public ResourceManager ResourceManager { get; private set; }
@@ -121,6 +131,18 @@ namespace AIVillage.Core
 
         /// <summary>ThreatManager 참조 (GameManager.Instance.ThreatManager 로 접근).</summary>
         public ThreatManager ThreatManager { get; private set; }
+
+        /// <summary>
+        /// DangerRegistry 참조 (GameManager.Instance.DangerRegistry 로 접근).
+        /// Week 9 추가: Gatherer가 노드 선택 시 위험 구역 필터링에 사용.
+        /// </summary>
+        public DangerRegistry DangerRegistry { get; private set; }
+
+        /// <summary>
+        /// TownHall 완공 여부. RegisterTownHall() 호출 이후 true.
+        /// 승리 조건 UI 등 외부에서 읽기 전용으로 사용한다.
+        /// </summary>
+        public bool IsTownHallBuilt => _townHallBuilt;
 
         #endregion
 
@@ -151,6 +173,18 @@ namespace AIVillage.Core
             ThreatManager = GetComponent<ThreatManager>();
             if (ThreatManager == null)
                 ThreatManager = gameObject.AddComponent<ThreatManager>();
+
+            // ── Week 9 추가: DangerRegistry 캐싱 ──
+            // ThreatManager 다음에 등록. MessageBus가 이미 생성된 후이므로
+            // DangerRegistry.Start()에서 "unit.fleeing" 구독이 안전하게 수행된다.
+            DangerRegistry = GetComponent<DangerRegistry>();
+            if (DangerRegistry == null)
+                DangerRegistry = gameObject.AddComponent<DangerRegistry>();
+
+            // ── v0.2-4 추가: CombatAlertQueue 캐싱 ──
+            // DangerRegistry 다음에 등록. Gatherer.OnThreatDetected()에서 Instance에 접근한다.
+            if (GetComponent<CombatAlertQueue>() == null)
+                gameObject.AddComponent<CombatAlertQueue>();
         }
 
         /// <summary>Start에서 MessageBus 이벤트를 구독한다 (Awake 시점에는 MessageBus가 미준비).</summary>
@@ -162,14 +196,18 @@ namespace AIVillage.Core
 
         private void OnNodeDepleted(object payload)
         {
+#if UNITY_EDITOR
             if (payload is AIVillage.Resources.ResourceNode node)
                 Debug.Log($"[GameManager] 노드 고갈 감지: {node.name}");
+#endif
         }
 
         private void OnNodeRegenerated(object payload)
         {
+#if UNITY_EDITOR
             if (payload is AIVillage.Resources.ResourceNode node)
                 Debug.Log($"[GameManager] 노드 재생성 감지: {node.name}");
+#endif
         }
 
         /// <summary>GDD 수치로 시작 자원을 초기화하고 Tick 루프를 시작한다.</summary>
@@ -179,7 +217,9 @@ namespace AIVillage.Core
             _currentStone = _startingStone;
             _isGameOver   = false;
 
+#if UNITY_EDITOR
             Debug.Log($"[GameManager] 시작 자원 세팅 완료 — 나무: {_currentWood}, 돌: {_currentStone}");
+#endif
 
             StartTick();
         }
@@ -237,7 +277,9 @@ namespace AIVillage.Core
                                            _basePosition.y + offset.y, 0f);
 
             Instantiate(_gathererPrefab, spawnPos, Quaternion.identity);
+#if UNITY_EDITOR
             Debug.Log($"[GameManager] Gatherer 스폰 — 인구: {PopulationManager.CurrentPop}/{PopulationManager.MaxPop}");
+#endif
         }
 
         #endregion
@@ -246,9 +288,10 @@ namespace AIVillage.Core
 
         /// <summary>
         /// 매 Tick 모든 살아있는 유닛의 주변에 몬스터가 있는지 확인하고,
-        /// 위협이 감지되면 해당 유닛에게 SetFleeing()을 호출한다.
+        /// 위협이 감지되면 해당 유닛에게 OnThreatDetected()를 호출한다.
+        /// 기본 동작은 SetFleeing(). Gatherer는 추가로 CombatAlertQueue에 경보를 등록한다.
         ///
-        /// 스냅샷 순회를 사용하여 SetFleeing() 내부에서 _units가 변경되어도 안전하다.
+        /// 스냅샷 순회를 사용하여 순회 중 _units가 변경되어도 안전하다.
         /// </summary>
         private void CheckThreatForAllUnits()
         {
@@ -269,7 +312,7 @@ namespace AIVillage.Core
                     ThreatManager.GetNearestMonster(unitPos, _threatDetectionRadius);
 
                 if (nearest != null)
-                    unit.SetFleeing();
+                    unit.OnThreatDetected(nearest);
             }
         }
 
@@ -277,22 +320,136 @@ namespace AIVillage.Core
 
         #region Win / Lose Condition (Week 10)
 
-        // TODO: Week 10 — 실제 인구, TownHall 완성, 유닛 생존 여부 연동
-        private void CheckWinLoseCondition()
+        /// <summary>
+        /// TownHall 완공 시 Building.OnBuilt()에서 호출된다.
+        /// _townHallBuilt 플래그를 true로 설정하여 승리 조건 체크를 활성화한다.
+        /// </summary>
+        public void RegisterTownHall()
         {
-            // TODO: Week 10
+            _townHallBuilt = true;
+#if UNITY_EDITOR
+            Debug.Log("[GameManager] TownHall 등록 완료 — 승리 조건 활성화");
+#endif
         }
 
-        /// <summary>게임 종료 상태로 전환하고 Tick 루프를 멈춘다.</summary>
+        /// <summary>
+        /// 매 Tick 승리/패배 조건을 확인한다.
+        ///
+        /// 승리: TownHall 완공 + 현재 인구 >= _victoryPopulation
+        /// 패배: 한 번이라도 유닛이 존재했던 뒤 현재 인구가 0이 된 경우
+        ///       (_hadUnits 가드로 게임 시작 직후 인구 0 상태를 패배로 오인하지 않음)
+        /// </summary>
+        private void CheckWinLoseCondition()
+        {
+            if (PopulationManager == null) return;
+
+            int currentPop = PopulationManager.CurrentPop;
+
+            // 패배 조건 타이밍 보정: 한 번이라도 유닛이 있었는지 추적
+            if (currentPop > 0)
+                _hadUnits = true;
+
+            // 승리 판정: TownHall 완공 AND 인구 목표 달성
+            if (_townHallBuilt && currentPop >= _victoryPopulation)
+            {
+                TriggerGameOver(true);
+                return;
+            }
+
+            // 패배 판정: 유닛이 있었던 뒤 전멸
+            if (_hadUnits && currentPop == 0)
+            {
+                TriggerGameOver(false);
+            }
+        }
+
+        /// <summary>게임 종료 상태로 전환하고 Tick 루프 및 시간을 멈춘다.</summary>
         private void TriggerGameOver(bool isVictory)
         {
             if (_isGameOver) return;
 
-            _isGameOver = true;
-            string result = isVictory ? "승리" : "패배";
+            _isGameOver      = true;
+            Time.timeScale   = 0f;
+            string result    = isVictory ? "승리" : "패배";
+#if UNITY_EDITOR
             Debug.Log($"[GameManager] 게임 종료 — {result}");
+#endif
 
             // TODO: Week 10 — UI 연동, 씬 전환 등
+        }
+
+        private void OnApplicationQuit()
+        {
+            Time.timeScale = 1f;
+        }
+
+#if UNITY_EDITOR
+        // ── 테스트 전용 ContextMenu (플레이 모드에서 Inspector 기어 아이콘 → 항목 클릭) ──
+
+        [ContextMenu("[테스트] 자원 충전 (나무+100 돌+100)")]
+        private void DebugAddResources()
+        {
+            if (!Application.isPlaying) { Debug.LogWarning("[테스트] 플레이 모드에서만 실행 가능"); return; }
+            AddResource(ResourceType.WOOD,  100);
+            AddResource(ResourceType.STONE, 100);
+        }
+
+        [ContextMenu("[테스트] 승리 조건 시뮬레이션")]
+        private void DebugForceVictory()
+        {
+            if (!Application.isPlaying) { Debug.LogWarning("[테스트] 플레이 모드에서만 실행 가능"); return; }
+
+            int pop = PopulationManager != null ? PopulationManager.CurrentPop : 0;
+            if (pop == 0)
+            {
+                Debug.LogWarning("[테스트] 씬에 유닛이 없습니다 — Gatherer가 스폰될 때까지 기다리세요.");
+                return;
+            }
+
+            _townHallBuilt     = true;
+            _hadUnits          = true;
+            _victoryPopulation = pop; // 현재 인구에 맞게 기준 임시 조정
+            CheckWinLoseCondition();
+        }
+
+        [ContextMenu("[테스트] 패배 조건 시뮬레이션")]
+        private void DebugForceDefeat()
+        {
+            if (!Application.isPlaying) { Debug.LogWarning("[테스트] 플레이 모드에서만 실행 가능"); return; }
+
+            _hadUnits = true;
+            foreach (var unit in FindObjectsByType<AIVillage.Units.AIUnit>(FindObjectsSortMode.None))
+                Destroy(unit.gameObject);
+            // 다음 Tick(0.5초)에 CheckWinLoseCondition이 pop=0을 감지해 패배 처리
+            Debug.Log("[테스트] 모든 유닛 제거 — 0.5초 후 패배 판정 예정");
+        }
+#endif
+
+        #endregion
+
+        #region Safe Zone API (Week 8-2 / House)
+
+        /// <summary>
+        /// House 완공 시 호출된다. 기지 위치와 안전 구역 반경을 등록한다.
+        /// Monster.IsUnitNearBase() 및 AIUnit.SetFleeing() 판정에 사용된다.
+        /// </summary>
+        public void RegisterSafeZone(Vector2 center, float radius)
+        {
+            _basePosition   = center;
+            _safeZoneRadius = radius;
+        }
+
+        /// <summary>
+        /// 주어진 월드 좌표가 기지 안전 구역 내부인지 반환한다.
+        /// House가 미건설(SafeZoneRadius == 0)이면 항상 false를 반환한다.
+        /// 기본 폴백: SafeZoneRadius가 0일 때 BasePosition 1f 이내는 도착으로 처리.
+        /// </summary>
+        public bool IsInSafeZone(Vector2 pos)
+        {
+            float r = _safeZoneRadius > 0f ? _safeZoneRadius : 1f;
+            float dx = pos.x - _basePosition.x;
+            float dy = pos.y - _basePosition.y;
+            return (dx * dx + dy * dy) <= r * r;
         }
 
         #endregion
@@ -316,11 +473,15 @@ namespace AIVillage.Core
             {
                 case ResourceType.WOOD:
                     _currentWood += amount;
+#if UNITY_EDITOR
                     Debug.Log($"[GameManager] 나무 +{amount} → 총 {_currentWood}");
+#endif
                     break;
                 case ResourceType.STONE:
                     _currentStone += amount;
+#if UNITY_EDITOR
                     Debug.Log($"[GameManager] 돌 +{amount} → 총 {_currentStone}");
+#endif
                     break;
                 default:
                     Debug.LogWarning($"[GameManager] AddResource — 알 수 없는 ResourceType: {type}");
@@ -353,7 +514,9 @@ namespace AIVillage.Core
                         return false;
                     }
                     _currentWood -= amount;
+#if UNITY_EDITOR
                     Debug.Log($"[GameManager] 나무 -{amount} → 총 {_currentWood}");
+#endif
                     return true;
 
                 case ResourceType.STONE:
@@ -363,7 +526,9 @@ namespace AIVillage.Core
                         return false;
                     }
                     _currentStone -= amount;
+#if UNITY_EDITOR
                     Debug.Log($"[GameManager] 돌 -{amount} → 총 {_currentStone}");
+#endif
                     return true;
 
                 default:

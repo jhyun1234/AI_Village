@@ -30,5 +30,11 @@ namespace AIVillage.Units
 
         /// <summary>위협을 감지하여 도주 중인 상태.</summary>
         Fleeing,
+
+        /// <summary>Warrior 전용: 기지에 숨어 대기 중인 상태.</summary>
+        Standby,
+
+        /// <summary>Warrior 전용: 몬스터와 전투 중인 상태.</summary>
+        Fighting,
     }
 }

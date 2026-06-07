@@ -14,7 +14,9 @@ namespace AIVillage.Resources
     public enum ResourceType
     {
         WOOD,
-        STONE
+        STONE,
+        SILVER,
+        COPPER
     }
 
 }

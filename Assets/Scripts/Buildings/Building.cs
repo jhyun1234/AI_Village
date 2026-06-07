@@ -30,10 +30,10 @@ namespace AIVillage.Buildings
 
         [Header("건설 비용 (GDD §6)")]
         [SerializeField, Tooltip("건설에 필요한 나무 수량")]
-        private int _buildCostWood = 5;
+        protected int _buildCostWood = 5;
 
         [SerializeField, Tooltip("건설에 필요한 돌 수량")]
-        private int _buildCostStone = 3;
+        protected int _buildCostStone = 3;
 
         [Header("건설 시간")]
         [SerializeField, Range(1f, 60f), Tooltip("건설 완료까지 걸리는 시간 (초)")]
@@ -54,6 +54,12 @@ namespace AIVillage.Buildings
         public bool          IsBuilt        => _state == BuildingState.Built;
         public float         BuildDuration  => _buildDuration;
 
+        /// <summary>건설에 필요한 나무 수량. PlayerController 사전 비용 체크용.</summary>
+        public int BuildCostWood  => _buildCostWood;
+
+        /// <summary>건설에 필요한 돌 수량. PlayerController 사전 비용 체크용.</summary>
+        public int BuildCostStone => _buildCostStone;
+
         /// <summary>예약 가능 여부: Unbuilt 상태이며 다른 Builder가 없을 때만 true.</summary>
         public bool IsAvailableForConstruction =>
             _state == BuildingState.Unbuilt && _reservedBy == null;
@@ -67,7 +73,7 @@ namespace AIVillage.Buildings
             GameManager.Instance?.BuildingManager?.RegisterBuilding(this);
         }
 
-        private void OnDestroy()
+        protected virtual void OnDestroy()
         {
             GameManager.Instance?.BuildingManager?.UnregisterBuilding(this);
         }
@@ -120,7 +126,9 @@ namespace AIVillage.Buildings
             gm.SpendResource(ResourceType.STONE, _buildCostStone);
             _state = BuildingState.UnderConstruction;
 
+#if UNITY_EDITOR
             Debug.Log($"[Building] '{name}' 건설 시작. 비용: 나무 {_buildCostWood}, 돌 {_buildCostStone}");
+#endif
             return true;
         }
 
@@ -132,7 +140,9 @@ namespace AIVillage.Buildings
             _state      = BuildingState.Built;
             _reservedBy = null;
 
+#if UNITY_EDITOR
             Debug.Log($"[Building] '{name}' 건설 완료!");
+#endif
             OnBuilt();
         }
 

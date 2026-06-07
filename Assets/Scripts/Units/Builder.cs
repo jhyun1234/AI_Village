@@ -42,10 +42,31 @@ namespace AIVillage.Units
 
         #region ── Unity Lifecycle ──
 
+        /// <summary>
+        /// 부모 Start() 호출 → MessageBus 구독 등록 → 초기 건설 탐색 시작.
+        /// Subscribe를 Start에서 수행하는 이유:
+        ///   Awake 시점에 MessageBus가 아직 초기화되지 않을 수 있으므로
+        ///   Start에서 구독하여 안전하게 연결한다.
+        /// </summary>
         protected override void Start()
         {
-            base.Start(); // PopulationManager 등록 (AIUnit.Start)
+            base.Start(); // AIUnit.Start → PopulationManager 등록
+
+            // Week 9: "building.reserved" 구독
+            // PlayerController가 건물을 배치하면 OnBuildingReserved 핸들러가 호출된다.
+            GameManager.Instance?.MessageBus?.Subscribe("building.reserved", OnBuildingReserved);
+
             SearchAndBuild();
+        }
+
+        /// <summary>
+        /// 오브젝트 파괴 시 MessageBus 구독을 해제하고 부모 OnDestroy를 호출한다.
+        /// 순서: Unsubscribe 먼저 → base.OnDestroy() (CancellationTokenSource Dispose)
+        /// </summary>
+        protected override void OnDestroy()
+        {
+            GameManager.Instance?.MessageBus?.Unsubscribe("building.reserved", OnBuildingReserved);
+            base.OnDestroy(); // AIUnit.OnDestroy → CancellationTokenSource Dispose + PopulationManager 해제
         }
 
         #endregion
@@ -128,7 +149,9 @@ namespace AIVillage.Units
             _targetBuilding = null;
             _isInBuildCycle = false;
 
+#if UNITY_EDITOR
             Debug.Log($"[Builder] '{name}' — OnFleeingEnter: 건설 상태 정리 완료.");
+#endif
         }
 
         /// <summary>
@@ -137,7 +160,9 @@ namespace AIVillage.Units
         /// </summary>
         protected override void OnFleeingExit()
         {
+#if UNITY_EDITOR
             Debug.Log($"[Builder] '{name}' — OnFleeingExit: 건설 재개.");
+#endif
             SearchAndBuild();
         }
 
@@ -176,7 +201,9 @@ namespace AIVillage.Units
             _targetBuilding = building;
             _isInBuildCycle = true;
 
+#if UNITY_EDITOR
             Debug.Log($"[Builder] '{name}' — '{building.name}' 예약. 이동 시작.");
+#endif
             SetDestination(building.transform.position);
         }
 
@@ -211,6 +238,38 @@ namespace AIVillage.Units
                 StopCoroutine(_buildCoroutine);
                 _buildCoroutine = null;
             }
+        }
+
+        #endregion
+
+        #region ── MessageBus Handlers ──
+
+        /// <summary>
+        /// "building.reserved" 메시지 핸들러 (Week 9 신규).
+        ///
+        /// PlayerController가 새 건물을 Instantiate한 직후 이 이벤트를 발행한다.
+        /// Invoke 대기 중인 Builder를 즉시 깨워 새 건물로 향하게 하는 트리거 역할.
+        ///
+        /// 무시 조건:
+        ///   1. Fleeing 중 — 도주가 최우선
+        ///   2. 이미 건설 작업 진행 중 — 현재 할당을 중단하지 않음 (안정성 우선)
+        ///   // TODO: 기획팀 확인 필요 — 진행 중 작업 강제 중단 여부
+        /// </summary>
+        private void OnBuildingReserved(object payload)
+        {
+            // 가드 1: Fleeing 중 — 건설 지시 무시
+            if (_currentState == UnitState.Fleeing) return;
+
+            // 가드 2: 이미 작업 중 — 현재 건설 유지
+            if (_isInBuildCycle) return;
+
+            // 대기 중인 Invoke 취소 후 즉시 재탐색 (트리거 역할)
+            CancelInvoke(nameof(SearchAndBuild));
+            SearchAndBuild();
+
+#if UNITY_EDITOR
+            Debug.Log($"[Builder] '{name}' — building.reserved 수신: 즉시 재탐색 시작.");
+#endif
         }
 
         #endregion

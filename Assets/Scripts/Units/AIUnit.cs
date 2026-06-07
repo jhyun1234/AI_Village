@@ -50,11 +50,9 @@ namespace AIVillage.Units
         [SerializeField, Range(0.5f, 20f)] protected float _moveSpeed = 3.5f;
 
         [Header("도주 설정 (GDD §8-2)")]
-        [Tooltip("기지로부터 이 거리 이내이면 '안전 구역'으로 판정. GDD: 5f")]
-        [SerializeField] private float _baseSafeWorldRadius = 5f; // 기획서 수치: 기지 안전 반경 5f
-
         [Tooltip("기지 안전 구역 내 체력 회복 속도 (HP/초). GDD: 5f")]
         [SerializeField] private float _healRate = 5f; // 기획서 수치: 체력 회복 5f HP/초
+        // 안전 구역 반경은 House._safeZoneRadius → GameManager.IsInSafeZone() 에서 관리
 
         #endregion
 
@@ -145,13 +143,47 @@ namespace AIVillage.Units
         protected void SetState(UnitState newState)
         {
             _currentState = newState;
-            // Moving 또는 Fleeing 상태일 때만 Update를 활성화한다
-            enabled = (newState == UnitState.Moving || newState == UnitState.Fleeing);
+            // Moving/Fleeing/Fighting 상태일 때 Update를 활성화한다
+            // Fighting 추가: Warrior가 전투 중 Update()에서 타겟 사망 감지 필요
+            enabled = (newState == UnitState.Moving  ||
+                       newState == UnitState.Fleeing  ||
+                       newState == UnitState.Fighting);
         }
 
         #endregion
 
         #region ── Public API ──
+
+        // ─────────────────────────────────────────────────────────────
+        // Week 9 신규 추가: Hp / MaxHp / IsFleeing 프로퍼티
+        //
+        // 이 세 프로퍼티는 PlayerController가 파견 가능 여부를 판단하기 위해
+        // protected 필드에 직접 접근하는 대신 사용하는 캡슐화된 읽기 전용 인터페이스다.
+        //
+        //   파견 거부 조건 (PlayerController.HandleDangerousDispatch):
+        //     1. IsFleeing == true → 도주 중인 유닛은 파견 목록에서 제외
+        //     2. Hp < MaxHp * _dispatchHpThreshold(0.8f) → 체력 80% 미만 파견 거부
+        // ─────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// 현재 체력. PlayerController 파견 명령 거부 조건 체크에 사용.
+        /// (GDD §9: 체력 80% 미만 유닛은 파견 거부)
+        /// </summary>
+        public float Hp => _hp;
+
+        /// <summary>
+        /// 최대 체력. PlayerController 파견 80% 조건 계산에 사용.
+        /// Formula: Hp >= MaxHp * _dispatchHpThreshold(0.8f) 이어야 파견 허용
+        /// </summary>
+        public float MaxHp => _maxHp;
+
+        /// <summary>
+        /// 현재 도주 중(Fleeing 상태)인지 여부.
+        /// _currentState 는 protected라 외부에서 직접 비교할 수 없으므로
+        /// 이 프로퍼티로 캡슐화한다.
+        /// PlayerController.FindNearestDispatchableUnit() 에서 도주 중 유닛을 필터링한다.
+        /// </summary>
+        public bool IsFleeing => _currentState == UnitState.Fleeing;
 
         /// <summary>
         /// 목적지를 설정하고 A* 경로 계산을 시작한다.
@@ -199,9 +231,22 @@ namespace AIVillage.Units
 
                 // "unit.died" 이벤트 발행: Week 10 승리/패배 조건 체크에 활용됨
                 GameManager.Instance?.MessageBus?.Publish("unit.died", gameObject);
+#if UNITY_EDITOR
                 Debug.Log($"[AIUnit] '{name}' 사망!");
+#endif
                 Destroy(gameObject);
             }
+        }
+
+        /// <summary>
+        /// GameManager.CheckThreatForAllUnits()이 위협 감지 시 호출한다.
+        /// 기본 구현은 SetFleeing(). 파생 클래스에서 override하여 추가 동작을 정의한다.
+        ///   Gatherer: 경보 등록 → base.OnThreatDetected() (SetFleeing)
+        ///   Warrior:  아무것도 안 함 (전투 파견은 CombatAlertQueue가 처리)
+        /// </summary>
+        public virtual void OnThreatDetected(Monster monster)
+        {
+            SetFleeing();
         }
 
         /// <summary>
@@ -216,25 +261,22 @@ namespace AIVillage.Units
         ///   5. "unit.fleeing" 이벤트 발행 (Week 9 DangerRegistry에서 수신 예정)
         ///   6. SetDestination(기지) → A* 경로 계산 시작
         /// </summary>
-        public void SetFleeing()
+        public virtual void SetFleeing()
         {
             // ── 재진입 방지: 이미 도주 중이면 무시 ──
             if (_currentState == UnitState.Fleeing) return;
 
-            // ── 기지 안전 구역 내에 이미 있으면 도주 불필요 ──
+            // ── House 안전 구역 내에 이미 있고 직접 위협이 없으면 도주 불필요 ──
+            // 안전 구역 반경은 House._safeZoneRadius → GameManager.IsInSafeZone() 로 판정.
+            // 단, 몬스터가 1.5f 이내로 접근한 경우에는 예외로 도주를 수행한다.
             GameManager gm = GameManager.Instance;
-            if (gm != null)
+            if (gm != null && gm.IsInSafeZone(transform.position))
             {
-                Vector2 basePos = gm.BasePosition;
-                float dx = transform.position.x - basePos.x;
-                float dy = transform.position.y - basePos.y;
-                float distSq = dx * dx + dy * dy;
-
-                if (distSq <= _baseSafeWorldRadius * _baseSafeWorldRadius)
-                {
-                    // 이미 기지 안전 구역 내에 있음 — 도주할 필요 없음
+                ThreatManager tm = gm.ThreatManager;
+                bool immediateThreat = tm != null &&
+                    tm.GetNearestMonster(transform.position, 1.5f) != null;
+                if (!immediateThreat)
                     return;
-                }
             }
 
             // ── Fleeing 상태로 전환 (enabled = true → Update 활성화) ──
@@ -246,7 +288,7 @@ namespace AIVillage.Units
             OnFleeingEnter();
 
             // ── "unit.fleeing" 이벤트 발행 ──
-            // Week 9 DangerRegistry에서 수신하여 위험 좌표를 기록할 예정 (GDD §9)
+            // Week 9 DangerRegistry에서 수신하여 위험 좌표를 기록한다 (GDD §9)
             gm?.MessageBus?.Publish("unit.fleeing", (Vector2)transform.position);
 
             // ── 기지를 목적지로 설정 ──
@@ -260,7 +302,9 @@ namespace AIVillage.Units
                 Debug.LogWarning($"[AIUnit] '{name}' — SetFleeing: GameManager.Instance가 null. 기지 좌표를 알 수 없음.");
             }
 
+#if UNITY_EDITOR
             Debug.Log($"[AIUnit] '{name}' → Fleeing 시작!");
+#endif
         }
 
         #endregion
@@ -282,14 +326,10 @@ namespace AIVillage.Units
             GameManager gm = GameManager.Instance;
             if (gm == null) return;
 
-            Vector2 basePos    = gm.BasePosition;
-            float   dx         = transform.position.x - basePos.x;
-            float   dy         = transform.position.y - basePos.y;
-            float   distSqToBase  = dx * dx + dy * dy;
-            float   safeRadiusSq  = _baseSafeWorldRadius * _baseSafeWorldRadius;
+            Vector2 basePos = gm.BasePosition;
 
-            // ── 기지 안전 구역 도달 판정 ──
-            if (distSqToBase <= safeRadiusSq)
+            // ── House 안전 구역 도달 판정 (GameManager.IsInSafeZone) ──
+            if (gm.IsInSafeZone(transform.position))
             {
                 // 체력 회복: GDD §8-2 — 기지 반경 내에서만 회복
                 // Formula: hp = Min(hp + healRate * deltaTime, maxHp)
@@ -307,15 +347,17 @@ namespace AIVillage.Units
                 SetState(UnitState.Idle);
                 OnFleeingExit();
 
+#if UNITY_EDITOR
                 Debug.Log($"[AIUnit] '{name}' — 기지 도달. Fleeing 해제. HP: {_hp:F1}/{_maxHp:F1}");
+#endif
                 return;
             }
 
             // ── 기지 반경 밖: 이동 처리 ──
-            if (_useDirectMoveToCamp)
+            if (_useDirectMoveToCamp || !_isPathReady)
             {
-                // A* 경로 실패 폴백 — 기지를 향해 직선으로 이동 (장애물 무시)
-                // 생존 우선 정책: 경로가 없어도 기지 방향으로 계속 이동
+                // A* 경로 실패 또는 아직 계산 중 — 기지를 향해 직선으로 즉시 이동
+                // 경로 계산 대기 중 멈춰서 몬스터 공격을 받는 문제 방지 (생존 우선 정책)
                 Vector3 targetPos = new Vector3(basePos.x, basePos.y, 0f);
                 transform.position = Vector3.MoveTowards(
                     transform.position,
@@ -324,7 +366,7 @@ namespace AIVillage.Units
             }
             else
             {
-                // A* 경로를 따라 이동 (경로 준비 전에는 FollowPath 내부에서 early return)
+                // A* 경로를 따라 이동
                 FollowPath();
             }
         }

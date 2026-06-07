@@ -31,13 +31,19 @@ namespace AIVillage.Core
         {
             if (building == null || _allBuildings.Contains(building)) return;
             _allBuildings.Add(building);
+#if UNITY_EDITOR
             Debug.Log($"[BuildingManager] 건물 등록: {building.name} | 총 {_allBuildings.Count}개");
+#endif
         }
 
         public void UnregisterBuilding(Building building)
         {
             if (_allBuildings.Remove(building))
+            {
+#if UNITY_EDITOR
                 Debug.Log($"[BuildingManager] 건물 제거: {building.name} | 총 {_allBuildings.Count}개");
+#endif
+            }
         }
 
         #endregion
