@@ -20,14 +20,19 @@ namespace AIVillage.GOAP
     // ───────────────────────────────────────────────────────────────────────────
     public enum WorldStateKey
     {
-        HasThreat        = 0, // 주변에 몬스터 위협이 존재하는가
+        // ── Gatherer 전용 (0~6) ──
+        HasThreat        = 0, // 주변에 몬스터 위협이 존재하는가          (Gatherer + Builder 공용)
         IsInventoryFull  = 1, // 인벤토리가 가득 찼는가 (수집량 == 1회 채집 한도)
         IsInventoryEmpty = 2, // 인벤토리가 비어있는가 (수집량 == 0)
         HasAvailableNode = 3, // 안전하게 갈 수 있는 자원 노드가 존재하는가
         IsAtBase         = 4, // 현재 기지(안전 구역) 내부에 위치하는가
         IsNodeReserved   = 5, // 현재 목표 노드를 예약 완료한 상태인가
-        IsFleeing        = 6, // 현재 도주 중인가
-        Count            = 7  // 항목 수 — 배열 크기 계산용, 실제 상태 키가 아님
+        IsFleeing        = 6, // 현재 도주 중인가                        (Gatherer + Builder 공용)
+        // ── Builder 전용 (7~8) ──
+        HasPendingBuilding = 7, // 건설 대기 중인 건물이 존재하는가
+        IsBuildingReserved = 8, // 현재 목표 건물을 예약 완료한 상태인가
+        // ── 항상 마지막 ──
+        Count = 9 // 항목 수 — 배열 크기 계산용, 실제 상태 키가 아님
     }
 
     /// <summary>

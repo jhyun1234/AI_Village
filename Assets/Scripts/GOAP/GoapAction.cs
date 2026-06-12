@@ -58,6 +58,13 @@ namespace AIVillage.GOAP
         public abstract void Initialize(GoapAgent agent);
 
         /// <summary>
+        /// BuilderGoapAgent 참조를 주입받는다 (Builder 전용 Action에서 override).
+        /// 기본 구현은 no-op — Gatherer 전용 Action은 override 불필요.
+        /// BuilderGoapAgent.InitializeGoalsAndActions()에서 1회 호출된다.
+        /// </summary>
+        public virtual void InitializeForBuilder(BuilderGoapAgent agent) { }
+
+        /// <summary>
         /// 현재 WorldState에서 이 Action을 실행할 수 있는지 반환한다.
         /// 일반적으로 ArePreconditionsMet(state)를 호출한다.
         /// 추가 런타임 조건이 있을 때 오버라이드한다.

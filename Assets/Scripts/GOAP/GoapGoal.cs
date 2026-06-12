@@ -20,10 +20,14 @@ namespace AIVillage.GOAP
     public enum GoapGoalType
     {
         None             = 0, // 목표 없음 (초기 상태)
-        Flee             = 1, // 도주 — Priority 0 (최고)
+        // ── Gatherer 목표 ──
+        Flee             = 1, // 도주 — Priority 0 (최고, Gatherer + Builder 공용)
         DepositResource  = 2, // 자원 반납 — Priority 1
         CollectResource  = 3, // 자원 채집 — Priority 2
-        WaitForResource  = 4  // 노드 대기 — Priority 3
+        WaitForResource  = 4, // 노드 대기 — Priority 3
+        // ── Builder 목표 ──
+        BuildBuilding    = 5, // 건물 건설 — Priority 1
+        WaitForBuilding  = 6  // 건설지 대기 — Priority 2
     }
 
     /// <summary>
@@ -68,8 +72,18 @@ namespace AIVillage.GOAP
                         && !state.Get(WorldStateKey.HasThreat);
 
                 case GoapGoalType.WaitForResource:
-                    // 안전한 노드가 없고 위협도 없을 때 대기
                     return !state.Get(WorldStateKey.HasAvailableNode)
+                        && !state.Get(WorldStateKey.HasThreat);
+
+                // ── Builder 목표 ──
+                case GoapGoalType.BuildBuilding:
+                    // 건설 대기 중인 건물이 있고 위협이 없을 때 건설
+                    return state.Get(WorldStateKey.HasPendingBuilding)
+                        && !state.Get(WorldStateKey.HasThreat);
+
+                case GoapGoalType.WaitForBuilding:
+                    // 건설 대기 건물이 없고 위협도 없을 때 대기
+                    return !state.Get(WorldStateKey.HasPendingBuilding)
                         && !state.Get(WorldStateKey.HasThreat);
 
                 default:
@@ -104,6 +118,20 @@ namespace AIVillage.GOAP
         public static GoapGoal CreateWaitForResource()
         {
             return new GoapGoal { Type = GoapGoalType.WaitForResource, Priority = 3 };
+        }
+
+        // ── Builder 전용 팩토리 ──
+
+        /// <summary>BuildBuilding Goal 생성 (Builder). Priority=1.</summary>
+        public static GoapGoal CreateBuildBuilding()
+        {
+            return new GoapGoal { Type = GoapGoalType.BuildBuilding, Priority = 1 };
+        }
+
+        /// <summary>WaitForBuilding Goal 생성 (Builder). Priority=2.</summary>
+        public static GoapGoal CreateWaitForBuilding()
+        {
+            return new GoapGoal { Type = GoapGoalType.WaitForBuilding, Priority = 2 };
         }
     }
 }

@@ -3,8 +3,10 @@
 // 역할  : 건설 전담 유닛. Idle → Moving → Building → Idle 루프.
 //         BuildingManager에서 가장 가까운 미완공 건설지를 자동으로 찾아 건설.
 //         Week 8: OnFleeingEnter/Exit 구현으로 Fleeing 진입/복귀 시 상태 정리.
-// 의존성: AIUnit, GameManager, BuildingManager, Building
-// GDD   : §6 BuilderFSM / Week 6 / §8-2 Fleeing 연동
+//         GOAP 3단계: BuilderGoapAgent 부착 시 GOAP가 의사결정 담당.
+//                     미부착 시 기존 Legacy FSM 동작 그대로 (Regression 없음).
+// 의존성: AIUnit, GameManager, BuildingManager, Building, BuilderGoapAgent
+// GDD   : §6 BuilderFSM / Week 6 / §8-2 Fleeing 연동 / §GOAP-3단계
 // =============================================================================
 
 using System.Collections;
@@ -12,6 +14,7 @@ using UnityEngine;
 using AIVillage.Buildings;
 using AIVillage.Core;
 using AIVillage.Resources;
+using AIVillage.GOAP;
 
 namespace AIVillage.Units
 {
@@ -22,6 +25,10 @@ namespace AIVillage.Units
     /// Week 8 추가:
     ///   - OnFleeingEnter(): 건설 코루틴 중단, 건물 예약 해제, Invoke 취소, 상태 초기화
     ///   - OnFleeingExit(): SearchAndBuild() 재호출로 건설 사이클 재개
+    ///
+    /// GOAP 3단계:
+    ///   - BuilderGoapAgent 부착 시 GOAP가 의사결정 담당 (언제 SearchAndBuild를 호출할지)
+    ///   - 미부착 시 기존 Legacy FSM 완전 동작 (Regression 없음)
     /// </summary>
     public class Builder : AIUnit
     {
@@ -35,39 +42,32 @@ namespace AIVillage.Units
 
         #region ── Private FSM State ──
 
-        private Building  _targetBuilding;
-        private bool      _isInBuildCycle;
-        private Coroutine _buildCoroutine;
+        private Building          _targetBuilding;
+        private bool              _isInBuildCycle;
+        private Coroutine         _buildCoroutine;
+        private BuilderGoapAgent  _builderGoapAgent; // GOAP 3단계: null이면 Legacy FSM 동작
 
         #endregion
 
         #region ── Unity Lifecycle ──
 
-        /// <summary>
-        /// 부모 Start() 호출 → MessageBus 구독 등록 → 초기 건설 탐색 시작.
-        /// Subscribe를 Start에서 수행하는 이유:
-        ///   Awake 시점에 MessageBus가 아직 초기화되지 않을 수 있으므로
-        ///   Start에서 구독하여 안전하게 연결한다.
-        /// </summary>
         protected override void Start()
         {
             base.Start(); // AIUnit.Start → PopulationManager 등록
 
-            // Week 9: "building.reserved" 구독
-            // PlayerController가 건물을 배치하면 OnBuildingReserved 핸들러가 호출된다.
+            _builderGoapAgent = GetComponent<BuilderGoapAgent>(); // null 허용
+
             GameManager.Instance?.MessageBus?.Subscribe("building.reserved", OnBuildingReserved);
 
-            SearchAndBuild();
+            // GOAP 모드: BuilderGoapAgent의 첫 Tick에서 플래닝이 시작되므로 직접 호출 안 함
+            if (_builderGoapAgent == null)
+                SearchAndBuild();
         }
 
-        /// <summary>
-        /// 오브젝트 파괴 시 MessageBus 구독을 해제하고 부모 OnDestroy를 호출한다.
-        /// 순서: Unsubscribe 먼저 → base.OnDestroy() (CancellationTokenSource Dispose)
-        /// </summary>
         protected override void OnDestroy()
         {
             GameManager.Instance?.MessageBus?.Unsubscribe("building.reserved", OnBuildingReserved);
-            base.OnDestroy(); // AIUnit.OnDestroy → CancellationTokenSource Dispose + PopulationManager 해제
+            base.OnDestroy();
         }
 
         #endregion
@@ -80,85 +80,77 @@ namespace AIVillage.Units
             if (_targetBuilding == null || _targetBuilding.IsBuilt)
             {
                 ResetCycle();
+                _builderGoapAgent?.NotifyArrival(); // GOAP: SearchBuilding 완료 신호 (건물 없음/완공)
                 return;
             }
 
             if (!_targetBuilding.StartConstruction())
             {
-                // 자원 부족 — 부족한 자원 종류를 GameManager에 알려 Gatherer 우선순위를 갱신한다.
+                // 자원 부족 — Gatherer 채집 우선순위 갱신
                 GameManager gm = GameManager.Instance;
                 if (gm != null)
                 {
                     int woodDeficit  = Mathf.Max(0, _targetBuilding.BuildCostWood  - gm.GetResource(ResourceType.WOOD));
                     int stoneDeficit = Mathf.Max(0, _targetBuilding.BuildCostStone - gm.GetResource(ResourceType.STONE));
-                    // 부족량이 더 많은 자원을 우선 요청 (동률이면 WOOD 우선)
                     gm.RequestResource(woodDeficit >= stoneDeficit ? ResourceType.WOOD : ResourceType.STONE);
                 }
 
-                // 예약만 해제하고 _isInBuildCycle은 true로 유지한다.
-                // ResetCycle()로 _isInBuildCycle=false를 만들면 OnIdle()이 즉시
-                // SearchAndBuild()를 호출하여 이미 도착한 위치에서 무한 루프가 발생한다.
                 _targetBuilding.ReleaseConstruction();
                 _targetBuilding = null;
+                // _isInBuildCycle 유지 → OnIdle() 즉시 재탐색 차단 (무한루프 방지)
+                // GOAP 모드: SearchBuildingAction이 현재 Action이므로 Invoke 재시도가 P-004 가드를 통과
                 Invoke(nameof(SearchAndBuild), _retryDelay);
                 return;
             }
 
             _buildCoroutine = StartCoroutine(BuildRoutine());
+            _builderGoapAgent?.NotifyArrival(); // GOAP: SearchBuilding → Construct 전환
         }
 
-        /// <summary>Idle 진입 시 호출. 건설 사이클 중간이 아닐 때만 다음 건설지 탐색.</summary>
+        /// <summary>Idle 진입 시 호출.</summary>
         protected override void OnIdle()
         {
+            if (_builderGoapAgent != null) return; // GOAP 모드: Agent가 결정
             if (!_isInBuildCycle)
                 SearchAndBuild();
         }
 
-        /// <summary>
-        /// 경로 실패 시 예약 해제 및 FSM 초기화 후 재탐색.
-        /// Fleeing 상태의 경로 실패는 base.OnPathFailed()에서 직선 폴백으로 처리된다.
-        /// </summary>
         protected override void OnPathFailed()
         {
-            base.OnPathFailed(); // Fleeing이면 직선 폴백 활성화, 아니면 Idle 복귀
-
-            // Fleeing 경로 실패는 base에서 처리됨 — 아래 정리는 일반 이동 실패에만 적용
+            base.OnPathFailed();
             if (_currentState == UnitState.Fleeing) return;
 
             CancelInvoke(nameof(SearchAndBuild));
             _targetBuilding?.ReleaseConstruction();
             ResetCycle();
+
+            if (_builderGoapAgent != null)
+            {
+                _builderGoapAgent.NotifyPathFailed();
+                return;
+            }
+
             Invoke(nameof(SearchAndBuild), _retryDelay);
         }
 
-        /// <summary>
-        /// Fleeing 상태 진입 시 호출 (AIUnit.SetFleeing → OnFleeingEnter 경유).
-        /// 진행 중인 건설 작업을 모두 정리하여 깨끗한 상태로 도주를 시작한다.
-        ///
-        /// 정리 순서:
-        ///   1. Invoke 예약 취소: SearchAndBuild 지연 재시도가 예약됐을 경우 취소
-        ///   2. 건설 코루틴 중단: null 체크 후 StopCoroutine
-        ///   3. 건물 예약 해제: 다른 Builder가 즉시 이어받을 수 있도록
-        ///   4. FSM 상태 변수 초기화: 복귀 후 SearchAndBuild에서 깨끗하게 시작
-        /// </summary>
+        /// <summary>위협 감지 시 호출. GOAP 모드에서는 ForceReplanOnThreat()도 호출.</summary>
+        public override void OnThreatDetected(Monster monster)
+        {
+            _builderGoapAgent?.ForceReplanOnThreat();
+            base.OnThreatDetected(monster); // SetFleeing()
+        }
+
         protected override void OnFleeingEnter()
         {
-            // ── 1. Invoke 예약 취소 ──
-            // SearchAndBuild가 _retryDelay / 0.5f 지연으로 Invoke 예약된 경우 취소
             CancelInvoke(nameof(SearchAndBuild));
 
-            // ── 2. 건설 코루틴 중단 ──
             if (_buildCoroutine != null)
             {
                 StopCoroutine(_buildCoroutine);
                 _buildCoroutine = null;
             }
 
-            // ── 3. 건물 예약 해제 ──
-            // 도주 중 다른 Builder가 이 건물을 즉시 이어받을 수 있도록 해제
             _targetBuilding?.ReleaseConstruction();
-
-            // ── 4. FSM 상태 초기화 ──
             _targetBuilding = null;
             _isInBuildCycle = false;
 
@@ -167,15 +159,16 @@ namespace AIVillage.Units
 #endif
         }
 
-        /// <summary>
-        /// 기지 안전 구역 도달 후 Fleeing에서 복귀할 때 호출 (AIUnit.UpdateFleeing 경유).
-        /// SearchAndBuild()를 호출하여 건설 사이클을 재개한다.
-        /// </summary>
         protected override void OnFleeingExit()
         {
 #if UNITY_EDITOR
             Debug.Log($"[Builder] '{name}' — OnFleeingExit: 건설 재개.");
 #endif
+            if (_builderGoapAgent != null)
+            {
+                _builderGoapAgent.NotifyFleeingExit();
+                return;
+            }
             SearchAndBuild();
         }
 
@@ -183,18 +176,15 @@ namespace AIVillage.Units
 
         #region ── FSM Logic ──
 
-        /// <summary>
-        /// 가장 가까운 미완공 건물을 찾아 이동을 시작한다.
-        /// 건물이 없으면 _retryDelay 후 재시도한다.
-        /// Fleeing 상태이거나 GameManager가 없으면 즉시 반환한다.
-        /// </summary>
         private void SearchAndBuild()
         {
             if (GameManager.Instance == null) return;
-
-            // ── Fleeing 상태에서는 탐색 금지 ──
-            // Invoke 지연으로 인해 OnFleeingEnter 이후에 이 메서드가 호출될 수 있음
             if (_currentState == UnitState.Fleeing) return;
+
+            // [GOAP P-004] GOAP 모드에서 현재 Action이 SearchBuildingAction이 아니면 무시.
+            // 도중에 Goal이 바뀐 뒤 지연 발화된 Invoke가 잘못된 탐색을 시작하는 것을 방지.
+            if (_builderGoapAgent != null && !(_builderGoapAgent.CurrentAction is SearchBuildingAction))
+                return;
 
             Building building = GameManager.Instance.BuildingManager
                 .GetNearestPendingBuilding(transform.position);
@@ -220,10 +210,6 @@ namespace AIVillage.Units
             SetDestination(building.transform.position);
         }
 
-        /// <summary>
-        /// 건설 타이머 대기 후 건물을 완공한다.
-        /// enabled=false 상태(Idle)에서도 코루틴은 계속 실행된다.
-        /// </summary>
         private IEnumerator BuildRoutine()
         {
             yield return new WaitForSeconds(_targetBuilding.BuildDuration);
@@ -232,15 +218,15 @@ namespace AIVillage.Units
 
             _targetBuilding.CompleteConstruction();
 
-            // 코루틴 내부에서 ResetCycle의 StopCoroutine을 피하기 위해 직접 초기화
             _targetBuilding = null;
             _isInBuildCycle = false;
             _buildCoroutine = null;
 
-            SearchAndBuild();
+            // GOAP 모드: 다음 Tick에서 IsBuildingReserved=false → ConstructAction.IsComplete → Replan
+            if (_builderGoapAgent == null)
+                SearchAndBuild();
         }
 
-        /// <summary>FSM 상태를 초기화한다. 진행 중인 BuildRoutine도 중단한다.</summary>
         private void ResetCycle()
         {
             _targetBuilding = null;
@@ -257,28 +243,19 @@ namespace AIVillage.Units
 
         #region ── MessageBus Handlers ──
 
-        /// <summary>
-        /// "building.reserved" 메시지 핸들러 (Week 9 신규).
-        ///
-        /// PlayerController가 새 건물을 Instantiate한 직후 이 이벤트를 발행한다.
-        /// Invoke 대기 중인 Builder를 즉시 깨워 새 건물로 향하게 하는 트리거 역할.
-        ///
-        /// 무시 조건:
-        ///   1. Fleeing 중 — 도주가 최우선
-        ///   2. 이미 건설 작업 진행 중 — 현재 할당을 중단하지 않음 (안정성 우선)
-        ///   // TODO: 기획팀 확인 필요 — 진행 중 작업 강제 중단 여부
-        /// </summary>
         private void OnBuildingReserved(object payload)
         {
-            // 가드 1: Fleeing 중 — 건설 지시 무시
             if (_currentState == UnitState.Fleeing) return;
 
-            // 가드 2: 실제로 건설 작업 진행 중(_targetBuilding != null)이면 유지.
-            // _isInBuildCycle=true라도 _targetBuilding=null이면 자원 부족 대기 상태이므로
-            // 새 건물 즉시 반응을 허용한다.
+            if (_builderGoapAgent != null)
+            {
+                _builderGoapAgent.NotifyBuildingReserved();
+                return;
+            }
+
+            // Legacy 모드
             if (_isInBuildCycle && _targetBuilding != null) return;
 
-            // 대기 중인 Invoke 취소 후 즉시 재탐색 (트리거 역할)
             CancelInvoke(nameof(SearchAndBuild));
             _isInBuildCycle = false;
             SearchAndBuild();
@@ -287,6 +264,16 @@ namespace AIVillage.Units
             Debug.Log($"[Builder] '{name}' — building.reserved 수신: 즉시 재탐색 시작.");
 #endif
         }
+
+        #endregion
+
+        #region ── GOAP 3단계: BuilderGoapAgent 전용 internal 접근자 ──
+
+        /// <summary>현재 예약된 목표 건물 (BuilderGoapAgent용).</summary>
+        internal Building TargetBuilding => _targetBuilding;
+
+        /// <summary>SearchBuildingAction.Execute()가 호출. SearchAndBuild() 위임.</summary>
+        internal void ExecuteSearchBuilding() => SearchAndBuild();
 
         #endregion
     }
