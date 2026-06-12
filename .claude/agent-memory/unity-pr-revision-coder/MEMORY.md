@@ -1,0 +1,1 @@
+- [feedback_goap_review_patterns.md](feedback_goap_review_patterns.md) — GOAP 2단계 PR 패턴: 인덱스 bounds 가드, 타입 방어(is 검사), Invoke 지연 발화 가드 3종 세트

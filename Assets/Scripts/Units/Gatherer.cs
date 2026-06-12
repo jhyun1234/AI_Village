@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using AIVillage.Resources;
 using AIVillage.Core;
+using AIVillage.GOAP;
 
 namespace AIVillage.Units
 {
@@ -46,6 +47,7 @@ namespace AIVillage.Units
         private bool         _isReturning;
         private bool         _isInGatherCycle; // OnIdle 재진입 방지 플래그
         private Coroutine    _gatherCoroutine;
+        private GoapAgent    _goapAgent; // GOAP 1단계: null이면 기존 동작 그대로
 
         #endregion
 
@@ -54,7 +56,12 @@ namespace AIVillage.Units
         protected override void Start()
         {
             base.Start(); // PopulationManager 등록 (AIUnit.Start)
-            SearchAndGo();
+            _goapAgent = GetComponent<GoapAgent>(); // null 허용: 미부착 시 기존 동작
+
+            // [GOAP 2단계] GoapAgent가 있으면 SearchAndGo 호출 안 함.
+            // GoapAgent의 첫 번째 Tick(game.tick 구독)에서 플래닝이 시작되어 Execute()가 호출된다.
+            if (_goapAgent == null)
+                SearchAndGo();
         }
 
         #endregion
@@ -64,9 +71,37 @@ namespace AIVillage.Units
         /// <summary>
         /// 목적지 도착 시 호출. 노드 도착이면 채집 시작, 기지 도착이면 자원 반납.
         /// Fleeing 상태에서는 AIUnit.OnArrival 분기로 인해 호출되지 않는다.
+        ///
+        /// [GOAP 2단계] GoapAgent 부착 시:
+        ///   - 기지 귀환(_isReturning)이면 자원 반납 처리 후 NotifyArrival()로 신호 전달.
+        ///   - 노드 도착이면 NotifyArrival()만 전달 (채집 시작은 GoapAgent.NotifyArrival이 담당).
         /// </summary>
         protected override void OnReachDestination()
         {
+            if (_goapAgent != null)
+            {
+                // [GOAP 2단계] 기지 귀환 시에만 자원 반납 처리 (기존 로직 그대로)
+                if (_isReturning)
+                {
+                    if (_gatheredAmount > 0 && _targetNode != null)
+                    {
+                        GameManager.Instance.AddResource(_targetNode.GetResourceType(), _gatheredAmount);
+#if UNITY_EDITOR
+                        Debug.Log($"[Gatherer] '{name}' — {_targetNode.GetResourceType()} {_gatheredAmount} 반납 완료 (GOAP).");
+#endif
+                    }
+                    _targetNode?.ReleaseReservation();
+                    _targetNode      = null;
+                    _gatheredAmount  = 0;
+                    _isReturning     = false;
+                    _isInGatherCycle = false;
+                }
+                // 도착 신호 전달 (SearchNodeAction → GatherAction 전환은 GoapAgent가 처리)
+                _goapAgent.NotifyArrival();
+                return;
+            }
+
+            // ── Legacy FSM (GoapAgent 미부착 시 기존 동작 그대로) ──
             if (!_isReturning && _targetNode != null)
             {
                 // 자원 노드에 도착 — 채집 코루틴 시작
@@ -92,10 +127,16 @@ namespace AIVillage.Units
         }
 
         /// <summary>
-        /// Idle 상태 진입 시 호출. 채집 사이클 중간이 아닐 때만 다음 노드를 탐색한다.
+        /// Idle 상태 진입 시 호출.
+        /// [GOAP 2단계] GoapAgent가 있으면 모든 행동 결정을 GoapAgent에 위임 — FSM은 대기만 한다.
+        /// Legacy FSM은 채집 사이클 중간이 아닐 때만 다음 노드를 탐색한다.
         /// </summary>
         protected override void OnIdle()
         {
+            // [GOAP 2단계] GoapAgent가 모든 결정을 담당 — FSM은 대기만
+            if (_goapAgent != null) return;
+
+            // Legacy FSM (GoapAgent 미부착 시 기존 동작 그대로)
             if (!_isInGatherCycle)
                 SearchAndGo();
         }
@@ -103,6 +144,7 @@ namespace AIVillage.Units
         /// <summary>
         /// 경로 실패 시 예약을 해제하고 FSM을 초기화한 뒤 재탐색한다.
         /// Fleeing 상태의 경로 실패는 base.OnPathFailed()에서 직선 폴백으로 처리된다.
+        /// [GOAP 2단계] GoapAgent 있으면 NotifyPathFailed()로 즉시 재플래닝한다.
         /// </summary>
         protected override void OnPathFailed()
         {
@@ -123,8 +165,17 @@ namespace AIVillage.Units
             _isReturning     = false;
             _isInGatherCycle = false;
 
-            // 이미 예약된 Invoke가 있을 수 있으므로 취소 후 재등록
+            // 이미 예약된 Invoke가 있을 수 있으므로 취소
             CancelInvoke(nameof(SearchAndGo));
+
+            if (_goapAgent != null)
+            {
+                // [GOAP 2단계] GoapAgent가 재플래닝 담당 — Invoke(SearchAndGo) 불필요
+                _goapAgent.NotifyPathFailed();
+                return;
+            }
+
+            // Legacy FSM: 지연 후 재탐색
             Invoke(nameof(SearchAndGo), _retryDelay);
         }
 
@@ -134,6 +185,8 @@ namespace AIVillage.Units
         /// </summary>
         public override void OnThreatDetected(Monster monster)
         {
+            _goapAgent?.ForceReplanOnThreat(); // [GOAP 1단계] 즉시 재플래닝 (Tick 주기 우회)
+
             if (monster != null)
             {
                 AIVillage.Core.ThreatLevel level = EvaluateThreatLevel(monster);
@@ -192,13 +245,19 @@ namespace AIVillage.Units
 
         /// <summary>
         /// 기지 안전 구역 도달 후 Fleeing에서 복귀할 때 호출 (AIUnit.UpdateFleeing 경유).
-        /// SearchAndGo()를 호출하여 채집 사이클을 재개한다.
+        /// [GOAP 2단계] GoapAgent 있으면 NotifyFleeingExit()로 즉시 재플래닝 요청.
+        /// Legacy: SearchAndGo()를 호출하여 채집 사이클을 재개한다.
         /// </summary>
         protected override void OnFleeingExit()
         {
 #if UNITY_EDITOR
             Debug.Log($"[Gatherer] '{name}' — OnFleeingExit: 채집 재개.");
 #endif
+            if (_goapAgent != null)
+            {
+                _goapAgent.NotifyFleeingExit();
+                return;
+            }
             SearchAndGo();
         }
 
@@ -228,6 +287,11 @@ namespace AIVillage.Units
             // Invoke 지연으로 인해 OnFleeingEnter 이후에도 이 메서드가 호출될 수 있음
             if (_currentState == UnitState.Fleeing) return;
 
+            // [PR Fix P-004] GOAP 경로에서 현재 Action이 SearchNodeAction이 아니면 Invoke 발화를 무시.
+            // Goal이 바뀐 뒤 지연 발화된 Invoke가 잘못된 노드 탐색을 시작하는 것을 방지한다.
+            if (_goapAgent != null && !(_goapAgent.CurrentAction is SearchNodeAction))
+                return;
+
             // ── 로컬 매니저 참조 캐싱 ──
             ThreatManager  tm = GameManager.Instance.ThreatManager;
             DangerRegistry dr = GameManager.Instance.DangerRegistry; // null 가능 (구형 씬 대비)
@@ -252,29 +316,41 @@ namespace AIVillage.Units
                 return;
             }
 
-            // ── 후보 필터링 + 최근접 노드 선택 ──
-            ResourceNode bestNode = null;
-            float        bestDist = float.MaxValue;
+            // ── 후보 필터링 + 최근접 노드 선택 (우선순위 2-패스) ──
+            // 1패스: GameManager.PreferredGatherType 노드 우선 탐색
+            // 2패스: 선호 타입 노드가 없으면 임의 타입으로 폴백
+            ResourceType preferred = GameManager.Instance?.PreferredGatherType ?? ResourceType.WOOD;
+            ResourceNode bestNode  = null;
+            float        bestDist  = float.MaxValue;
 
+            // ── 1패스: 선호 자원 타입 ──
             foreach (ResourceNode candidate in candidates)
             {
                 if (candidate == null) continue;
+                if (candidate.GetResourceType() != preferred) continue;
 
                 Vector2 nodePos = candidate.transform.position;
-
-                // 필터 1: DangerRegistry 위험 구역 회피
-                // dr == null 이면 구형 씬이므로 이 필터를 건너뜀
                 if (dr != null && dr.IsDangerousArea(nodePos, _safeNodeRadius)) continue;
-
-                // 필터 2: ThreatManager 직접 위협 회피
                 if (tm != null && tm.GetNearestMonster(nodePos, _safeNodeRadius) != null) continue;
 
-                // 거리 비교 — 두 필터 통과 노드 중 가장 가까운 것 선택
                 float dist = Vector2.Distance(transform.position, nodePos);
-                if (dist < bestDist)
+                if (dist < bestDist) { bestDist = dist; bestNode = candidate; }
+            }
+
+            // ── 2패스: 선호 타입 없으면 임의 타입 ──
+            if (bestNode == null)
+            {
+                bestDist = float.MaxValue;
+                foreach (ResourceNode candidate in candidates)
                 {
-                    bestDist = dist;
-                    bestNode = candidate;
+                    if (candidate == null) continue;
+
+                    Vector2 nodePos = candidate.transform.position;
+                    if (dr != null && dr.IsDangerousArea(nodePos, _safeNodeRadius)) continue;
+                    if (tm != null && tm.GetNearestMonster(nodePos, _safeNodeRadius) != null) continue;
+
+                    float dist = Vector2.Distance(transform.position, nodePos);
+                    if (dist < bestDist) { bestDist = dist; bestNode = candidate; }
                 }
             }
 
@@ -308,8 +384,11 @@ namespace AIVillage.Units
         }
 
         /// <summary>
-        /// 채집 타이머 대기 후 자원을 수집하고 기지로 귀환한다.
+        /// 채집 타이머 대기 후 자원을 수집한다.
         /// enabled=false 상태(Idle/Gathering)에서도 코루틴은 계속 실행된다.
+        ///
+        /// [GOAP 2단계] 채집만 담당. 귀환은 ReturnToBaseAction.Execute() → StartReturnToBase()가 처리.
+        /// Legacy(GoapAgent 없음): 채집 완료 후 귀환 이동까지 처리 (기존 동작 유지).
         /// </summary>
         private IEnumerator GatherRoutine()
         {
@@ -325,20 +404,109 @@ namespace AIVillage.Units
                 _targetNode      = null;
                 _isInGatherCycle = false;
                 _gatherCoroutine = null;
-                Invoke(nameof(SearchAndGo), _retryDelay);
+
+                // [GOAP 2단계] 다음 Tick에서 GoapAgent가 노드 없음(IsNodeReserved=false) 감지 → Replan
+                if (_goapAgent == null)
+                    Invoke(nameof(SearchAndGo), _retryDelay);
                 yield break;
             }
 
             _gatheredAmount  = gathered;
-            _isReturning     = true;
             _gatherCoroutine = null;
 
 #if UNITY_EDITOR
-            Debug.Log($"[Gatherer] '{name}' — {_targetNode.GetResourceType()} {gathered} 채집 완료. 기지로 귀환.");
+            Debug.Log($"[Gatherer] '{name}' — {_targetNode.GetResourceType()} {gathered} 채집 완료.");
 #endif
 
-            Vector2 home = GameManager.Instance.BasePosition;
-            SetDestination(new Vector3(home.x, home.y, 0f));
+            // [GOAP 2단계] 귀환은 ReturnToBaseAction.Execute() → StartReturnToBase()가 담당.
+            // 다음 Tick에서 IsInventoryFull=true → GatherAction.IsComplete → TryAdvanceAction → ReturnToBaseAction.Execute().
+            // Legacy: GoapAgent 없으면 기존대로 귀환 이동 시작.
+            if (_goapAgent == null)
+            {
+                _isReturning = true;
+                Vector2 home = GameManager.Instance.BasePosition;
+                SetDestination(new Vector3(home.x, home.y, 0f));
+#if UNITY_EDITOR
+                Debug.Log($"[Gatherer] '{name}' — 기지로 귀환 (Legacy FSM).");
+#endif
+            }
+            // GOAP 경로: GoapAgent의 다음 Tick이 IsInventoryFull을 감지하여 ReturnToBaseAction을 실행함
+        }
+
+        #endregion
+
+        #region ── GOAP 1단계: GoapAgent 전용 internal getter ──
+
+        // GoapAgent.UpdateWorldState()에서 Gatherer 내부 상태를 읽기 위한 접근자.
+        // internal: 같은 어셈블리(AIVillage)에서만 접근 가능 — 외부 노출 최소화.
+
+        /// <summary>현재 채집한 자원 수량 (GoapAgent용).</summary>
+        internal int GatheredAmount => _gatheredAmount;
+
+        /// <summary>1회 채집 한도 (GoapAgent용). IsInventoryFull 판정에 사용.</summary>
+        internal int GatherAmountPerTrip => _gatherAmountPerTrip;
+
+        /// <summary>안전 노드 선택 반경 (GoapAgent용). 위협 필터링 거리 기준.</summary>
+        internal float SafeNodeRadius => _safeNodeRadius;
+
+        /// <summary>현재 예약된 목표 노드 (GoapAgent용). null이면 미예약 상태.</summary>
+        internal AIVillage.Resources.ResourceNode TargetNode => _targetNode;
+
+        /// <summary>현재 도주 중 여부 (GoapAgent용). IsFleeing WorldState 키에 반영.</summary>
+        internal bool IsFleeing => _currentState == UnitState.Fleeing;
+
+        #endregion
+
+        #region ── GOAP 2단계: GoapAction 전용 실행 메서드 ──
+
+        /// <summary>
+        /// SearchNodeAction.Execute()가 호출.
+        /// 안전 노드 탐색 + 예약 + 이동을 시작한다.
+        /// SearchAndGo()는 private을 유지 — 이 메서드가 delegate wrapper 역할.
+        /// </summary>
+        internal void ExecuteSearch() => SearchAndGo();
+
+        /// <summary>
+        /// GoapAgent.NotifyArrival()이 호출.
+        /// 예약된 노드에서 채집 코루틴을 시작한다.
+        /// GatherAction.Execute()는 no-op이므로 GoapAgent가 이 메서드를 직접 호출한다 (설계 결정 2).
+        /// </summary>
+        internal void StartGatherCoroutine()
+        {
+            if (_targetNode == null)
+            {
+                Debug.LogWarning($"[Gatherer] '{name}' StartGatherCoroutine — _targetNode가 null입니다. 채집을 시작할 수 없습니다.");
+                return;
+            }
+            // 중복 코루틴 방지: 기존 코루틴이 있으면 먼저 중단
+            if (_gatherCoroutine != null)
+            {
+                StopCoroutine(_gatherCoroutine);
+                _gatherCoroutine = null;
+            }
+            _gatherCoroutine = StartCoroutine(GatherRoutine());
+        }
+
+        /// <summary>
+        /// ReturnToBaseAction.Execute()가 호출.
+        /// 귀환 플래그를 세우고 기지로 이동을 시작한다.
+        /// </summary>
+        internal void StartReturnToBase()
+        {
+            GameManager gm = GameManager.Instance;
+            if (gm == null)
+            {
+                Debug.LogWarning($"[Gatherer] '{name}' StartReturnToBase — GameManager.Instance가 null입니다.");
+                return;
+            }
+            _isReturning = true;
+            // Warehouse가 완공돼 있으면 창고로, 아직 없으면 BasePosition(House)으로 귀환
+            Vector2 target = gm.HasWarehouse ? gm.WarehousePosition : gm.BasePosition;
+            SetDestination(new Vector3(target.x, target.y, 0f));
+#if UNITY_EDITOR
+            string dest = gm.HasWarehouse ? "Warehouse" : "BasePosition";
+            Debug.Log($"[Gatherer] '{name}' — ReturnToBase 시작 (GOAP) → {dest} {target}");
+#endif
         }
 
         #endregion

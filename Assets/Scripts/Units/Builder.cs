@@ -11,6 +11,7 @@ using System.Collections;
 using UnityEngine;
 using AIVillage.Buildings;
 using AIVillage.Core;
+using AIVillage.Resources;
 
 namespace AIVillage.Units
 {
@@ -84,9 +85,21 @@ namespace AIVillage.Units
 
             if (!_targetBuilding.StartConstruction())
             {
-                // 자원 부족 — 예약 해제 후 재탐색
+                // 자원 부족 — 부족한 자원 종류를 GameManager에 알려 Gatherer 우선순위를 갱신한다.
+                GameManager gm = GameManager.Instance;
+                if (gm != null)
+                {
+                    int woodDeficit  = Mathf.Max(0, _targetBuilding.BuildCostWood  - gm.GetResource(ResourceType.WOOD));
+                    int stoneDeficit = Mathf.Max(0, _targetBuilding.BuildCostStone - gm.GetResource(ResourceType.STONE));
+                    // 부족량이 더 많은 자원을 우선 요청 (동률이면 WOOD 우선)
+                    gm.RequestResource(woodDeficit >= stoneDeficit ? ResourceType.WOOD : ResourceType.STONE);
+                }
+
+                // 예약만 해제하고 _isInBuildCycle은 true로 유지한다.
+                // ResetCycle()로 _isInBuildCycle=false를 만들면 OnIdle()이 즉시
+                // SearchAndBuild()를 호출하여 이미 도착한 위치에서 무한 루프가 발생한다.
                 _targetBuilding.ReleaseConstruction();
-                ResetCycle();
+                _targetBuilding = null;
                 Invoke(nameof(SearchAndBuild), _retryDelay);
                 return;
             }
@@ -260,11 +273,14 @@ namespace AIVillage.Units
             // 가드 1: Fleeing 중 — 건설 지시 무시
             if (_currentState == UnitState.Fleeing) return;
 
-            // 가드 2: 이미 작업 중 — 현재 건설 유지
-            if (_isInBuildCycle) return;
+            // 가드 2: 실제로 건설 작업 진행 중(_targetBuilding != null)이면 유지.
+            // _isInBuildCycle=true라도 _targetBuilding=null이면 자원 부족 대기 상태이므로
+            // 새 건물 즉시 반응을 허용한다.
+            if (_isInBuildCycle && _targetBuilding != null) return;
 
             // 대기 중인 Invoke 취소 후 즉시 재탐색 (트리거 역할)
             CancelInvoke(nameof(SearchAndBuild));
+            _isInBuildCycle = false;
             SearchAndBuild();
 
 #if UNITY_EDITOR

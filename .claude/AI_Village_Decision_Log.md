@@ -2,7 +2,7 @@
 
 > 이 문서는 기획 과정에서 내려진 모든 결정과 방향을 기록한 참고 문서입니다.
 > "왜 이렇게 만들었는가"를 언제든 돌아볼 수 있도록 작성되었습니다.
-> 최종 수정: 2026-05-28
+> 최종 수정: 2026-06-09
 
 ---
 
@@ -433,5 +433,332 @@ float loyalty            // 충성도 0~100 (현재는 100 고정)
 
 ---
 
+---
+
+## 17. Week 8 — ThreatManager + Monster FSM + Fleeing 설계 결정
+
+**날짜:** 2026-05-29
+
+### 위협 감지 방식: ThreatManager 폴링 (Physics2D 아님)
+| 항목 | 결정 |
+|------|------|
+| AIUnit 감지 방식 | GameManager Tick(0.5s)마다 `ThreatManager.GetNearestMonster()` 폴링 |
+| Monster 추적 대상 탐지 | Monster 측에서 `Physics2D.OverlapCircle` 사용 |
+| 이유 | AIUnit마다 매 Update에서 OverlapCircle 호출 시 유닛 수 × 프레임 횟수의 Physics 연산 발생 → Tick 기반 0.5s 1회로 축소 |
+
+### Monster FSM: 독립 MonoBehaviour
+| 항목 | 결정 |
+|------|------|
+| Monster 이동 방식 | `Vector3.MoveTowards` (A* 미사용) |
+| 상속 여부 | AIUnit 상속 안 함, 독립 MonoBehaviour |
+| enabled 토글 | 미적용 (Monster Update는 항상 활성) |
+| 이유 | 순찰/추적 경로가 단순하므로 A* 비동기 경로 불필요 |
+
+### enabled 토글 확장
+- 기존: `enabled = (state == Moving)`
+- 변경: `enabled = (state == Moving || state == Fleeing)`
+- 이유: Fleeing 중 매 Update에서 기지 반경 체크 + 체력 회복이 필요
+
+### SetState 가시성 변경
+- `AIUnit.SetState()`: `private` → `protected`
+- `SetFleeing()` public 메서드가 내부에서 `SetState(Fleeing)` + `enabled=true` 호출
+
+### Gatherer/Builder 코루틴 인터럽트 패턴
+- `SetFleeing()` 호출 시 파생 클래스 `OnFleeingEnter()` 호출
+- Gatherer: `StopCoroutine(_gatherCoroutine)` + `_targetNode.ReleaseReservation()` + 상태 초기화
+- Builder: `StopCoroutine(_buildCoroutine)` + `_targetBuilding.ReleaseConstruction()` + 상태 초기화
+- `CancelInvoke(nameof(SearchAndGo))` 필수 포함
+
+### Monster 추적 포기 이중 조건
+- 조건 A: 거리 > 8타일
+- 조건 B: 유닛이 기지 반경(5타일) 내 진입
+- 두 조건 중 하나라도 충족 시 Chasing → Patrolling
+
+---
+
+## 18. Week 9 — DangerRegistry + PlayerController 설계 결정
+
+**날짜:** 2026-05-29
+
+### DangerRegistry: Fleeing 진입 시 자동 기록
+- Fleeing 상태 진입 시 현재 좌표를 `DangerRegistry`에 자동 기록
+- 회피 반경: 4타일 (A* 경로탐색 비용 상승 구역)
+- 만료 시간: 120초 (Inspector 조정 가능)
+
+### PlayerController: 좌클릭/우클릭 방식
+| 입력 | 동작 |
+|------|------|
+| 좌클릭 | 가장 가까운 파견 가능 유닛에 이동 명령 |
+| 우클릭 | 선택된 건물 프리팹 배치 |
+| 1~3번 키 | 건물 선택 (House/Quarry/TownHall) |
+
+### AI 거부 로직 구현
+- 플레이어가 위험 지역 파견 명령 시 `AIUnit.hp >= maxHp * 0.8f` 이면 수행
+- 80% 미만 시 거부 (Idle 유지)
+
+---
+
+## 19. Week 10 — TownHall + 승패조건 + Debug 정리 결정
+
+**날짜:** 2026-05-30
+
+### 승리/패배 조건 구현
+| 조건 | 구현 |
+|------|------|
+| 승리 | 인구 20명 + TownHall 완공 시 `GameManager.OnVictory()` |
+| 패배 | `PopulationManager` 등록 유닛 전멸 시 `GameManager.OnDefeat()` |
+
+### Quarry 자동 생산
+- 돌 1개 / 45초
+- `Coroutine` 기반 타이머 (`enabled=false`에서도 코루틴 계속 실행됨을 이용)
+
+### Debug.Log 정리
+- 모든 Debug.Log: `#if UNITY_EDITOR` + `#endif` 래핑으로 일괄 처리
+- 런타임 빌드에서 로그 비용 제거
+
+---
+
+## 20. v0.2-1 — CameraController 설계 결정
+
+**날짜:** 2026-05-30
+
+| 항목 | 결정 |
+|------|------|
+| 이동 방식 | 마우스 포인터가 화면 가장자리(엣지) 진입 시 이동 방향 결정 |
+| 클램핑 범위 | MinX=-30, MaxX=30, MinY=-30, MaxY=30 (맵 월드 좌표 기준) |
+| 부착 위치 | MainCamera 오브젝트 |
+| 이유 | 60×60 맵이 화면보다 크므로 카메라 이동 필수. 엣지 스크롤이 RTS 장르 표준 |
+
+---
+
+## 21. v0.2-2 — SILVER/COPPER 자원 확장 결정
+
+**날짜:** 2026-05-30
+
+| 항목 | 결정 |
+|------|------|
+| 추가 자원 | COPPER(구리), SILVER(은) |
+| 채집 시간 | 5초 (나무 2초, 돌 5초와 동일 수준) |
+| 재생 시간 | 90초 (돌 60초보다 더 희귀하게 설정) |
+| 주요 용도 | 무기 제작 (v0.2-5 Forge/Blacksmith) |
+| ResourceType enum | `WOOD=0, STONE=1, SILVER=2, COPPER=3` |
+| 이유 | v0.2-5 무기 시스템 선행 자원. v0.1 시스템 수정 없이 enum 확장만으로 추가 가능 (기존 설계 원칙 준수) |
+
+---
+
+## 22. v0.2-3 — Warrior FSM + Barracks 설계 결정
+
+**날짜:** 2026-05-31
+
+### Warrior 아키텍처 핵심 결정 (불변)
+
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| `base.Start()` | **미호출** | PopulationManager 미등록 (Warrior 전멸 = 패배 조건 아님) |
+| `base.OnDestroy()` | 호출 유지 | `UnregisterUnit`의 Contains 체크로 무해 |
+| `SetFleeing()` | override → 빈 메서드 | Warrior는 도주하지 않음 |
+| `OnThreatDetected()` | override → 빈 메서드 | 경보 등록은 Gatherer가 담당 |
+| Standby 은신 | `SpriteRenderer.enabled=false` + `Collider2D.enabled=false` | `GameObject.SetActive(false)` 시 코루틴 멈춤 → 금지 |
+| 코루틴 참조 | `_attackCoroutine` 필드 보관 | 상태 전환 시 명시적 StopCoroutine 필수 |
+
+### WarriorHealHelper 분리 결정
+- **결정:** 별도 MonoBehaviour 컴포넌트로 분리
+- **이유:** Warrior의 `SpriteRenderer.enabled=false`는 MonoBehaviour.enabled와 무관. WarriorHealHelper가 독립적으로 `enabled=true` 상태를 유지하며 Standby 중에도 HP 회복 가능
+
+### Barracks 설계
+| 항목 | 값 |
+|------|---|
+| 건설 비용 | 나무x15, 돌x10 |
+| 최대 슬롯 | 3 |
+| Warrior 훈련 비용 | 나무x5, 돌x5 |
+| 훈련 시간 | 10초 |
+| Warrior 등록 방식 | `OnBuilt()` → `CombatAlertQueue.RegisterBarracks()` |
+| Warrior 해제 방식 | `OnDestroy()` → `CombatAlertQueue.UnregisterBarracks()` |
+
+---
+
+## 23. v0.2-4 — OnThreatDetected + CombatAlertQueue 설계 결정
+
+**날짜:** 2026-05-31
+
+### OnThreatDetected 설계
+- **추가 위치:** `AIUnit` 추상 메서드 → `Gatherer`에서 override
+- **Gatherer 동작:** Monster HP 평가 → ThreatLevel 결정 → CombatAlertQueue에 경보 등록 → `SetFleeing()` 호출
+- **Warrior 동작:** override → 빈 메서드 (경보 등록 없음)
+
+### ThreatLevel 판단 기준 (Monster.Hp 기반)
+| ThreatLevel | Monster HP |
+|-------------|-----------|
+| AllNeeded | ≥ 40 |
+| VeryStrong | ≥ 25 |
+| Strong | ≥ 15 |
+| Weak | < 15 |
+
+### CombatAlertQueue 주요 결정
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| Barracks 목록 관리 | 캐시 등록 패턴 (`RegisterBarracks`/`UnregisterBarracks`) | `FindObjectsOfType<Barracks>()` 런타임 씬 전체 탐색 금지 |
+| Dispatch 버퍼 | `_dispatchBuffer` 재사용 (readonly List) | GC 최적화, 파견마다 new List 할당 방지 |
+| 키 입력 가드 | `if (Keyboard.current == null) return;` | Play Mode 진입/종료 타이밍 NRE 방지 |
+| 단일 책임 | UpdateFighting()이 StartReturning() 단일 호출 | AttackRoutine 코루틴과 Update의 중복 호출 방지 |
+
+---
+
+---
+
+## 24. v0.2-5 — 무기 시스템 수치 확정 (2026-06-09)
+
+**날짜:** 2026-06-09
+
+### 무기 종류: 1종 (합금 무기)
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 무기 종류 | 1종 (구리+은 혼합) | v0.2-5 범위를 단순하게 유지. 2종으로 만들면 WeaponType 분기, 공격력 단계 등 구현 복잡도 상승 |
+| 제작 비용 | 구리x5 + 은x3 | 구리(보통 희귀) + 은(고희귀) 혼합. 전략적 자원 비축 필요 수준 |
+| 비무장 공격력 | 15 HP/회 | 기존 값 |
+| 무장 공격력 | 25 HP/회 (+10) | Monster(HP 50) 기준 비무장 4회→무장 2회. 명확한 체감 차이 |
+
+### 건물 의존 관계: Forge → Blacksmith
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 구조 | Forge 먼저 건설해야 Blacksmith 건설 가능 | 진행감(progression) 부여. Forge만 있으면 무기 제작 불가 → 두 건물 투자 필요 |
+| Forge 역할 | 선행 건물 (용광로 — 금속 가공 인프라) | 단독으로 기능 없음, Blacksmith의 전제조건 |
+| Blacksmith 역할 | 무기 제작 실행 건물 | 플레이어 명령(키 입력) → 구리x5+은x3 소비 → Warrior에게 무기 배급 |
+| 건설 비용 | Forge: 나무15+돌10 / Blacksmith: 나무20+돌15 | 기존 확정값 유지 |
+
+### 경보 타임아웃: 없음
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 타임아웃 | 없음 | 플레이어가 Q/W/E/Space로 명시적으로 처리해야만 경보 소멸. "AI는 명령을 거부하거나 플레이어 판단을 기다린다"는 v0.1 핵심 철학과 일관성 유지 |
+
+### 미확정 (구현 중 결정)
+- 무기 제작 트리거 키 (Blacksmith 클릭 후 어떤 키인지)
+- 무기 유지 여부 (Warrior가 Standby로 돌아온 후에도 무장 상태 유지인지)
+
+---
+
+---
+
+## 25. GOAP 마이그레이션 전략 결정 (2026-06-10)
+
+**날짜:** 2026-06-10
+
+### 4단계 점진적 교체 전략 채택
+
+| 단계 | 내용 | 이유 |
+|------|------|------|
+| 1단계 | GOAP 레이어만 추가 (FSM 그대로) | FSM 위에 올라타는 목표 결정 레이어. regression 없음. |
+| 2단계 | Gatherer FSM 내부를 GoapAction으로 교체 | 검증 우선. 가장 복잡한 유닛 먼저. |
+| 3단계 | Builder / Warrior 동일 적용 | 검증된 구조 복사. |
+| 4단계 | GOAP 래퍼 제거 | FSM 완전 소멸. 결과적으로 완전 교체. |
+
+**핵심 원칙:** 각 단계마다 게임 실행 가능 상태 유지. 롤백 가능.
+
+### GOAP 아키텍처 결정
+
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| WorldState 표현 | `bool[]` + `WorldStateKey enum` 인덱싱 | GC-free. Tick 루프에서 new 없음. |
+| 플래닝 알고리즘 | Forward Chaining DFS (max depth 5) | Goal 4개 / Action 5개 규모에서 A* 불필요. |
+| GoapPlanner | static class | 20개 유닛이 공유 가능. 상태 없음. |
+| GoapAgent → FSM 인터페이스 | pull 방식 (FSM이 CurrentGoalType 읽음) | 발행 시점 제어가 FSM 쪽에 있어 자연스러움. |
+| Tick 동기화 | `game.tick` MessageBus 채널 | GameManager 기존 Tick 루프 재활용. |
+| Regression 방지 | GoapAgent 미부착 시 기존 FSM 그대로 | 프리팹 단위로 점진 교체 가능. |
+
+### Gatherer 수정 최소화 원칙
+- AIUnit.cs: **수정 없음**
+- Gatherer.cs: internal getter 4개 + OnIdle 분기 2줄 + 3줄(필드/Start/OnThreatDetected) = **9줄 추가**
+- GameManager.cs: OnTick 끝에 `game.tick` 발행 **1줄 추가**
+
+---
+
+## 26. GOAP 2단계 버그 수정 결정 (2026-06-12)
+
+**날짜:** 2026-06-12
+
+### 버그 1: GatherAction 미진입 (_actions 배열 순서)
+| 항목 | 결정 |
+|------|------|
+| 현상 | DFS가 [SearchNode, SearchNode, Gather] 3단 플랜 반환 → NotifyArrival에서 GatherAction 찾지 못함 |
+| 원인 | `_actions`에서 SearchNodeAction이 GatherAction 앞에 있어 DFS depth 1에서 SearchNode 재시도 |
+| 수정 | `_actions` 순서: `[Flee, GatherAction, SearchNodeAction, Return, Wait]` (GatherAction 앞으로 이동) |
+
+### 버그 2: 활성 플랜 중 불필요한 Replan (근본 원인)
+| 항목 | 결정 |
+|------|------|
+| 현상 | 채집-귀환 반복 사이클이 실행되지 않음 |
+| 원인 | `IsAtBase` (기지 이탈 시 false), `HasAvailableNode` (노드 예약 후 Available 목록에서 제외) 변화가 changed detection 발동 → 플랜을 [GatherAction] 단독 또는 WaitForResource로 교체 → GatherAction.Execute()는 no-op이므로 채집 코루틴 미시작 |
+| 수정 | `planActive = _currentActionIndex >= 0 && _currentActionIndex < _planBuffer.Count` — 플랜 실행 중엔 changed detection Replan 차단. 초기 상태(index=-1)와 플랜 소진 후에만 Replan 허용 |
+
+### 버그 3: Execute 직후 false changed 감지
+| 항목 | 결정 |
+|------|------|
+| 원인 | `SearchNodeAction.Execute()` → `_targetNode` 즉시 세팅, 다음 Tick에서 `IsNodeReserved` 변화 감지 → Replan |
+| 수정 | `TryAdvanceAction` 반환 및 `Replan()` 후 `UpdateWorldState()` 재호출 → prevState에 Execute 직후 상태 반영 |
+
+### PlayerController 파견 대상 제외
+- GoapAgent 부착 유닛(Gatherer): 좌클릭 파견 대상에서 제외 — GOAP가 자율 제어
+- Builder: 좌클릭 파견 대상에서 제외 — `building.reserved` MessageBus로만 이동
+
+---
+
+## 27. Builder 시스템 개선 결정 (2026-06-12)
+
+**날짜:** 2026-06-12
+
+### Builder 무한 루프 수정
+| 항목 | 결정 |
+|------|------|
+| 현상 | `StartConstruction()` 실패 시 999+ 경고/로그 발생 |
+| 원인 | 실패 시 `ResetCycle()` → `_isInBuildCycle=false` → `OnIdle()` → 즉시 `SearchAndBuild()` → 이미 도착한 위치에서 재예약 → 60fps 루프 |
+| 수정 | 실패 시 `_isInBuildCycle` 유지 (true), `ReleaseConstruction()` + `_targetBuilding=null` + `Invoke(_retryDelay)` 만 수행. `OnIdle()` 차단됨 |
+
+### OnBuildingReserved 개선
+- 기존: `_isInBuildCycle=true`이면 무조건 무시
+- 수정: `_isInBuildCycle=true && _targetBuilding!=null`일 때만 무시
+- 이유: 자원 부족 대기 중(`_targetBuilding=null`)에도 새 건물 즉시 반응 가능하게
+
+### 자원 우선순위 시스템
+| 항목 | 결정 |
+|------|------|
+| 방식 | 방식 C — GameManager.PreferredGatherType 중앙 관리 |
+| 트리거 | Builder.OnReachDestination() 자원 부족 → 부족량 계산 → gm.RequestResource(더 부족한 타입) |
+| 적용 | Gatherer.SearchAndGo() 2-패스: 1패스=PreferredType, 2패스=임의 타입 폴백 |
+| 이유 | Builder-Gatherer 직접 결합 없음. WorldState 수정 불필요. 최소 코드 변경으로 구현 가능 |
+
+---
+
+## 28. Warehouse 자원 창고 시스템 결정 (2026-06-12)
+
+**날짜:** 2026-06-12
+
+### 문제 배경
+- Gatherer가 BasePosition(House)으로 귀환 시 Builder가 근처에서 건설 중이면 시각적으로 "자원을 Builder에게 갖다주는 것처럼" 보임
+- House(안전구역)와 자원 납품 지점이 동일 위치로 역할 혼재
+
+### 방식 결정
+| 옵션 | 결정 |
+|------|------|
+| A: WoodDepot + StoneDepot 분리 | 미채택 — 구현 2배 복잡 |
+| B: 단일 Warehouse | **채택** — 역할 분리 명확, 구현 최소 |
+| C: House 재활용 | 미채택 — 시각적 혼동 미해결 |
+
+### 설계 결정
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 건물 타입 | Warehouse (Building 상속, static Instance) | 1개 제한 필요 |
+| 건설 비용 | 나무 10, 돌 8 | 기본 인프라, 초반 건설 가능 수준 |
+| 도착 반경 | 1.5f | A* 격자 오차(~0.7f) + 도착 임계값(0.2f) 고려 |
+| 배치 키 | 7번 키 | 6번까지 기존 건물 사용 |
+| 폴백 동작 | Warehouse 미완공 시 BasePosition(House) 사용 | 이전 버전 완전 호환 |
+
+### 역할 분리
+| 건물 | 역할 |
+|------|------|
+| House | 안전 구역 (체력 회복, Fleeing 해제 기준) |
+| Warehouse | 자원 납품 지점 (GOAP `IsAtBase` 기준) |
+
+---
+
 *이 문서는 새로운 결정이 내려질 때마다 업데이트됩니다.*
-*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0) → 2026-05-28 Week 3~7 구현 결정 추가*
+*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0) → 2026-05-28 Week 3~7 구현 결정 추가 → 2026-06-09 Week 8~10 + v0.2-1~v0.2-5 결정 추가 (GDD v3.0.0) → 2026-06-10 GOAP 마이그레이션 전략 확정 → 2026-06-12 GOAP 2단계 버그 수정 + Builder 개선 + Warehouse 시스템 추가 (GDD v3.1.0)*

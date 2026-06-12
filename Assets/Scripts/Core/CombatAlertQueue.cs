@@ -6,8 +6,9 @@
 //         Gatherer.OnThreatDetected()에서 EnqueueAlert() 호출.
 //         Barracks.OnBuilt()에서 RegisterBarracks(), OnDestroy()에서 UnregisterBarracks() 호출.
 //         플레이어 입력: Q=1명, W=2명, E=전원, Space=스킵
+//         v0.2-5: CollectUnequippedWarriors() 추가 — Blacksmith.TryCraftWeapon()에서 호출.
 // 의존성: UnityEngine.InputSystem, AIVillage.Units.Monster, AIVillage.Buildings.Barracks
-// GDD   : §v0.2-4 CombatAlertQueue / §v0.2-3 Warrior 파견
+// GDD   : §v0.2-4 CombatAlertQueue / §v0.2-3 Warrior 파견 / §v0.2-5 무기 시스템
 // =============================================================================
 
 using System.Collections.Generic;
@@ -135,6 +136,25 @@ namespace AIVillage.Core
 #endif
         }
 
+        /// <summary>
+        /// Blacksmith.TryCraftWeapon()에서 호출.
+        /// 캐시된 모든 Barracks에서 비무장(IsEquipped=false) + Standby 상태 Warrior를
+        /// 전달받은 result 리스트에 수집한다.
+        ///
+        /// v0.2-5: 파견 중인 Warrior는 제외(Standby 조건). 귀환 후 다음 제작 시 장착된다.
+        /// 중간 List 할당 없이 result를 직접 채우므로 GC 할당이 없다.
+        /// result는 호출 전 Clear()되어 있어야 한다 (Blacksmith._craftBuffer 재사용 방식과 동일).
+        /// </summary>
+        /// <param name="result">수집 결과를 채울 버퍼 리스트.</param>
+        public void CollectUnequippedWarriors(List<Warrior> result)
+        {
+            foreach (Barracks b in _knownBarracks)
+            {
+                if (b != null && b.IsBuilt)
+                    b.CollectUnequippedWarriors(result);
+            }
+        }
+
         #endregion
 
         #region ── Alert Processing ──
@@ -164,12 +184,18 @@ namespace AIVillage.Core
 
             if (available == 0)
             {
+                // [PR Fix]: P-004 — DisplayCurrentAlert() 내 Debug.Log (1) #if UNITY_EDITOR 래핑
+#if UNITY_EDITOR
                 Debug.Log($"[경보] Warrior 없음 — 파견 불가 ({LevelToString(alert.Level)} 위협 감지)");
+#endif
             }
             else
             {
+                // [PR Fix]: P-004 — DisplayCurrentAlert() 내 Debug.Log (2) #if UNITY_EDITOR 래핑
+#if UNITY_EDITOR
                 Debug.Log($"[경보 {_alertQueue.Count}건 대기] {LevelToString(alert.Level)} | " +
                           $"Q:1명 W:2명 E:전원 Space:스킵");
+#endif
             }
         }
 
@@ -233,6 +259,7 @@ namespace AIVillage.Core
         /// <summary>
         /// 캐시된 Barracks 목록에서 파견 가능한 Warrior를 _dispatchBuffer에 수집한다.
         /// 매 조회마다 _dispatchBuffer.Clear() 후 재사용하므로 GC 할당이 없다.
+        /// 조건: IsAvailableForDispatch (Standby + 체력 80% 이상).
         /// </summary>
         private void CollectAvailableWarriors()
         {

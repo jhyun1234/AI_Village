@@ -5,6 +5,7 @@
 //         GameManager.Instance.BuildingManager 사용.
 // 의존성: GameManager, Building (AIVillage.Buildings)
 // GDD   : §6 BuildingManager / Week 6
+//         §v0.2-5 HasBuiltForge / HasBuiltBlacksmith 프로퍼티 추가 (무기 시스템 선행 조건)
 // =============================================================================
 
 using System.Collections.Generic;
@@ -16,6 +17,8 @@ namespace AIVillage.Core
     /// <summary>
     /// Building 목록을 관리하는 매니저.
     /// Builder FSM이 가장 가까운 미완공 건설지를 요청할 때 사용한다.
+    /// v0.2-5: Forge/Blacksmith 완공 여부를 static Instance 패턴으로 O(1)에 제공한다.
+    ///         PlayerController의 건설 선행 조건 체크에 사용된다.
     /// </summary>
     public sealed class BuildingManager : MonoBehaviour
     {
@@ -56,8 +59,8 @@ namespace AIVillage.Core
         /// </summary>
         public Building GetNearestPendingBuilding(Vector2 from)
         {
-            Building nearest    = null;
-            float    minDist    = float.MaxValue;
+            Building nearest = null;
+            float    minDist = float.MaxValue;
 
             foreach (Building b in _allBuildings)
             {
@@ -88,6 +91,28 @@ namespace AIVillage.Core
                 return count;
             }
         }
+
+        // ── v0.2-5 추가: 무기 시스템 선행 조건 조회 프로퍼티 ──
+
+        /// <summary>
+        /// 씬에 완공된 Forge(용광로)가 있으면 true.
+        /// Blacksmith 건설 허용 여부 및 PlayerController 선행 조건 체크에 사용된다.
+        ///
+        /// [PR Fix]: P-008 — O(n) 순회 제거. Forge.Instance 싱글톤으로 O(1) 조회.
+        /// Forge.OnBuilt()에서 Instance가 등록되므로 null이면 미완공 상태를 의미한다.
+        /// </summary>
+        public bool HasBuiltForge =>
+            Forge.Instance != null && Forge.Instance.IsBuilt;
+
+        /// <summary>
+        /// 씬에 완공된 Blacksmith(대장간)가 있으면 true.
+        /// 동일한 Blacksmith를 중복 배치 방지할 때 PlayerController에서 사용한다.
+        ///
+        /// [PR Fix]: P-008 — O(n) 순회 제거. Blacksmith.Instance 싱글톤으로 O(1) 조회.
+        /// Blacksmith.OnBuilt()에서 Instance가 등록되므로 null이면 미완공 상태를 의미한다.
+        /// </summary>
+        public bool HasBuiltBlacksmith =>
+            Blacksmith.Instance != null && Blacksmith.Instance.IsBuilt;
 
         #endregion
 

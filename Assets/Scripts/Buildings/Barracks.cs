@@ -3,6 +3,7 @@
 // 역할  : 훈련소 건물. 완공 후 Warrior 유닛을 최대 3마리까지 자동 훈련시킨다.
 //         슬롯이 비면 자원이 확보되는 즉시 훈련을 재개한다.
 //         완공 시 CombatAlertQueue에 등록하여 Warrior 조회를 FindObjectsOfType 없이 지원한다.
+//         v0.2-5: CollectUnequippedWarriors() 추가 — Blacksmith가 비무장 Warrior를 수집할 때 사용.
 // 사용법: 프리팹에 이 컴포넌트 추가. Inspector에서 _warriorPrefab 할당 필수.
 //         PlayerController 4번 키로 건설 배치.
 // 의존성: AIVillage.Core.GameManager, AIVillage.Core.CombatAlertQueue, AIVillage.Units.Warrior
@@ -47,6 +48,10 @@ namespace AIVillage.Buildings
         // PopulationManager에 미등록된 Warrior를 CombatAlertQueue가 조회할 수 있도록 직접 보유
         private readonly List<Warrior> _warriors = new List<Warrior>();
 
+        // [PR Fix]: P-005 — TrainingLoop 코루틴 참조를 필드에 저장.
+        // OnDestroy 시 고아 코루틴이 되지 않도록 명시적 StopCoroutine 호출을 위해 필요.
+        private Coroutine _trainingCoroutine = null;
+
         #endregion
 
         #region ── Unity Editor 기본값 ──
@@ -65,12 +70,22 @@ namespace AIVillage.Buildings
         {
             // CombatAlertQueue에 등록하여 FindObjectsOfType 없이 Warrior 조회 가능하게 함
             CombatAlertQueue.Instance?.RegisterBarracks(this);
-            StartCoroutine(TrainingLoop());
+
+            // [PR Fix]: P-005 — StartCoroutine 반환값을 _trainingCoroutine 필드에 저장
+            _trainingCoroutine = StartCoroutine(TrainingLoop());
         }
 
         protected override void OnDestroy()
         {
             CombatAlertQueue.Instance?.UnregisterBarracks(this);
+
+            // [PR Fix]: P-005 — OnDestroy에서 고아 코루틴 방지를 위해 명시적으로 StopCoroutine 호출
+            if (_trainingCoroutine != null)
+            {
+                StopCoroutine(_trainingCoroutine);
+                _trainingCoroutine = null;
+            }
+
             base.OnDestroy(); // BuildingManager 해제
         }
 
@@ -98,12 +113,35 @@ namespace AIVillage.Buildings
         /// <summary>
         /// CombatAlertQueue가 파견 가능한 Warrior를 수집할 때 호출한다.
         /// 중간 List 할당 없이 전달받은 result 리스트에 직접 추가한다.
+        /// 조건: Standby 상태 + 체력 80% 이상 (IsAvailableForDispatch).
         /// </summary>
         public void CollectAvailableWarriors(List<Warrior> result)
         {
             foreach (Warrior w in _warriors)
             {
                 if (w != null && w.IsAvailableForDispatch)
+                    result.Add(w);
+            }
+        }
+
+        /// <summary>
+        /// Blacksmith.TryCraftWeapon()에서 비무장 Warrior를 수집할 때 호출한다.
+        /// 조건: Standby 상태 + 미장착(!IsEquipped).
+        ///
+        /// v0.2-5: 파견 중인 Warrior는 전투 중이므로 제외하고 Standby만 장착.
+        ///         파견 중 Warrior는 귀환 후 다음 제작 시 장착된다.
+        /// </summary>
+        /// <param name="result">결과를 추가할 버퍼 리스트. 호출 전 Clear()는 호출 측 책임.</param>
+        public void CollectUnequippedWarriors(List<Warrior> result)
+        {
+            foreach (Warrior w in _warriors)
+            {
+                // null 가드: Warrior가 파괴된 경우 스킵
+                if (w == null) continue;
+
+                // Standby 상태이면서 아직 무기를 장착하지 않은 Warrior만 수집
+                // (CurrentState == Standby 조건으로 파견 중인 Warrior 제외)
+                if (w.CurrentState == UnitState.Standby && !w.IsEquipped)
                     result.Add(w);
             }
         }

@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 2521546659053693560}
   - component: {fileID: 2691829702287508174}
   - component: {fileID: 6932690498386644754}
+  - component: {fileID: -3452822075753622205}
   m_Layer: 3
   m_Name: Gatherer
   m_TagString: Untagged
@@ -158,3 +159,15 @@ MonoBehaviour:
   _gatherAmountPerTrip: 1
   _retryDelay: 2
   _safeNodeRadius: 4
+--- !u!114 &-3452822075753622205
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 929674901286328773}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ce37f15d0c5b4694c80518a3314492c7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIVillage.GOAP.GoapAgent

@@ -1,7 +1,7 @@
 # 📋 AI Village — 게임 기획 및 개발 명세서
 
-> **문서 버전:** v2.3.0 (Week 1~7 구현 완료 반영)
-> **최종 수정:** 2026-05-28
+> **문서 버전:** v3.1.0 (v0.2 완료 + GOAP 1단계 완료 반영)
+> **최종 수정:** 2026-06-10
 > **장르:** 2D 탑다운 AI 자율 에이전트 시뮬레이션
 > **엔진:** Unity 2D (URP)
 > **플랫폼:** PC (Steam)
@@ -12,8 +12,10 @@
 
 | 버전 | 핵심 내용 | 목표 기간 | 완성 가능성 |
 |------|----------|---------|-----------|
-| **v0.1** ← 현재 | AI 마을 빌더 (자원 2종 + 유닛 2종 + 건물 3종 + 위협 1종) | 8~10주 | 80% |
-| v0.5 | Explorer + FogOfWar + 무기/정비 + 전투 방어 | +6주 | 65% |
+| v0.1 ✅ | AI 마을 빌더 (자원 2종 + 유닛 2종 + 건물 3종 + 위협 1종) | 완료 | ✅ |
+| v0.2 ✅ | 카메라 스크롤 + 자원확장(SILVER/COPPER) + Warrior/Barracks + 전투경보 + 무기시스템 | 완료 | ✅ |
+| **GOAP** ← 현재 | FSM → GOAP 4단계 마이그레이션 (1단계 완료) | 진행 중 | 🔄 |
+| v0.5 | Explorer + FogOfWar + 전투 방어 고도화 | +6주 | 65% |
 | v1.0 | 적 팩션 1개 + 침략 + 왕국 정복 | +8주 | 50% |
 
 > **원칙:** v0.1을 완전히 동작하는 게임으로 만든 뒤 다음 단계로 진행.
@@ -80,24 +82,204 @@ AI는 생존 판단에 따라 제안을 **수행하거나 거부**한다.
 
 ---
 
-## 🔮 v0.1에서 제외된 기능 (추후 버전)
+## 🔮 v0.1에서 제외된 기능 (역사적 기록)
 
-> 아래 기능은 v0.1에서 **구현하지 않는다.**
-> 단, 데이터 구조에서 미래를 위한 필드는 미리 포함한다.
+> 아래는 v0.1 범위 확정 시 제외한 기능 목록. v0.2 이후 단계적 추가.
 
-| 기능 | 예정 버전 |
-|------|---------|
-| Explorer 유닛 | v0.5 |
-| Fog of War | v0.5 |
-| 철광석/구리/은 자원 | v0.5~v1.0 |
-| 대장간 + 무기 + 정비 시스템 | v0.5 |
-| 전투 모드 (마을 방어) | v0.5 |
-| 적 팩션 + 침략 시스템 | v1.0 |
-| FactionManager / TerritoryManager | v1.0 |
-| 통신탑 / 연구소 / 자동화 공장 | v1.0 |
-| SaveManager (ISaveable) | v1.0 |
-| IDestructible (건물 파괴) | v1.0 |
-| 반란/독립 시스템 | v2.0 |
+| 기능 | 당초 예정 | 실제 구현 |
+|------|---------|---------|
+| 구리/은 자원 | v0.5~v1.0 | ✅ v0.2-2 |
+| 전투 유닛 (Warrior) | v0.5 | ✅ v0.2-3 |
+| 전투 경보 시스템 | v0.5 | ✅ v0.2-4 |
+| 무기 시스템 (Forge/Blacksmith) | v0.5 | ⏳ v0.2-5 예정 |
+| Explorer 유닛 | v0.5 | v0.5 유지 |
+| Fog of War | v0.5 | v0.5 유지 |
+| 전투 방어 고도화 | v0.5 | v0.5 유지 |
+| 적 팩션 + 침략 시스템 | v1.0 | v1.0 유지 |
+| FactionManager / TerritoryManager | v1.0 | v1.0 유지 |
+| 통신탑 / 연구소 / 자동화 공장 | v1.0 | v1.0 유지 |
+| SaveManager (ISaveable) | v1.0 | v1.0 유지 |
+| IDestructible (건물 파괴) | v1.0 | v1.0 유지 |
+| 반란/독립 시스템 | v2.0 | v2.0 유지 |
+
+---
+
+## 🔄 v0.2 게임 비전
+
+v0.1의 마을 빌더에서 한 단계 발전: **전투 방어 시스템**을 추가한다.
+
+- Warrior가 훈련소(Barracks)에 대기하다가 경보 발생 시 파견된다
+- 플레이어가 경보에 응답하여 파견 규모를 결정한다 (Q/W/E/Space)
+- 구리/은 자원으로 무기 시스템을 갖춘다 (v0.2-5 예정)
+
+---
+
+## ✅ v0.2 구현 완료 항목
+
+| # | 항목 | 결정 |
+|---|------|------|
+| V02-01 | 카메라 엣지 스크롤링 | 마우스 엣지 진입 시 이동, 범위 X/Y: -30~+30 |
+| V02-02 | 자원 확장 (SILVER/COPPER) | 채집 5초, 재생 90초 |
+| V02-03 | Warrior 유닛 + WarriorHealHelper | Standby/Moving/Fighting FSM, PopulationManager 미등록 |
+| V02-04 | Barracks 건물 | 나무15+돌10, Warrior 훈련 (나무5+돌5, 10초), 최대 슬롯 3 |
+| V02-05 | OnThreatDetected (Gatherer) | Monster 강도 평가 후 CombatAlertQueue 등록 + SetFleeing |
+| V02-06 | CombatAlertQueue | Q=1명/W=2명/E=전원/Space=스킵, ThreatLevel 4단계 |
+
+## ⏳ v0.2 미완료 항목
+
+| # | 항목 | 우선순위 |
+|---|------|---------|
+| V02-07 | 무기 시스템 (WeaponType + Forge + Blacksmith) | ✅ 완료 |
+| V02-08 | AI 정보 패널 (유닛 클릭 → 콘솔 로그) | ⏳ 예정 |
+| V02-09 | 첫 번째 플레이어블 빌드 | ✅ 완료 (UI 없음, 경계선 없음) |
+
+## v0.2 확정 수치 (v0.2-5 무기 시스템)
+
+| 항목 | 확정값 |
+|------|--------|
+| 무기 종류 | 1종 (합금 무기 — 구리+은 혼합 재료) |
+| 무기 제작 비용 | 구리x5 + 은x3 |
+| 건물 의존 관계 | Forge 선행 건설 필요 → Blacksmith에서 무기 제작 |
+| Forge 건설 비용 | 나무x15 + 돌x10 |
+| Blacksmith 건설 비용 | 나무x20 + 돌x15 |
+| 비무장 Warrior 공격력 | 15 HP/회 (기본값) |
+| 무장 Warrior 공격력 | 25 HP/회 (+10 증가) |
+| 경보 타임아웃 | 없음 — Q/W/E/Space로 반드시 처리해야 소멸 |
+
+> 전투 시뮬레이션 (Monster MaxHp=50 기준):
+> - 비무장 Warrior: 4회 공격 ≈ 4초 처치
+> - 무장 Warrior: 2회 공격 ≈ 2초 처치
+
+## v0.2 미확정 수치 (구현 중 결정)
+
+| 항목 | 상태 |
+|------|------|
+| 무기 제작 트리거 키 (어떤 키로 제작 명령하는지) | ⏳ |
+| 무기 유지 여부 (귀환 후 Standby에서도 무장 유지인지) | ⏳ |
+
+---
+
+## v0.2 신규 시스템 명세
+
+### CameraController (v0.2-1)
+
+| 속성 | 값 |
+|------|---|
+| 이동 방식 | 마우스 엣지 스크롤링 (화면 가장자리 진입 시 이동) |
+| 이동 범위 | X: -30~+30, Y: -30~+30 (맵 origin (-30,-30) 기준) |
+| 부착 위치 | MainCamera 오브젝트 |
+
+### 자원 확장: SILVER / COPPER (v0.2-2)
+
+| 자원 | 채집 시간 | 재생 시간 | 주요 용도 |
+|------|----------|----------|---------|
+| 구리 (COPPER) | 5초 | 90초 | 무기 제작 (v0.2-5) |
+| 은 (SILVER) | 5초 | 90초 | 무기 제작 (v0.2-5) |
+
+### Warrior 유닛 (v0.2-3)
+
+| 속성 | 값 |
+|------|---|
+| 훈련 비용 | 나무x5, 돌x5 |
+| 훈련 시간 | 10초 |
+| 공격력 | 15 HP |
+| 공격 범위 | 1.2타일 |
+| 공격 간격 | 1초 |
+| 탐지 반경 | 5타일 |
+| 파견 최소 HP | 80% (0.8f) |
+| 대기 회복 속도 | 5 HP/초 (WarriorHealHelper) |
+| 인구 등록 | 미등록 (Warrior 전멸이 패배 조건 아님) |
+
+**Warrior FSM 전환:**
+```
+Standby → Moving(파견 명령) → Fighting(Monster 탐지) → Moving(귀환) → Standby
+```
+
+**핵심 아키텍처 결정:**
+- `base.Start()` 미호출 → PopulationManager 미등록
+- `SetFleeing()` / `OnThreatDetected()` override → 빈 메서드 (Warrior는 도주하지 않음)
+- 대기 은신: `SpriteRenderer.enabled=false` + `Collider2D.enabled=false` (`GameObject.SetActive(false)` 금지 — 코루틴 멈춤)
+- `WarriorHealHelper`: 별도 MonoBehaviour, Standby 중 HP 회복 (enabled=false와 무관하게 동작)
+- `_attackCoroutine` 필드로 AttackRoutine 참조 보관 → 상태 전환 시 명시적 `StopCoroutine`
+
+### Barracks 건물 (v0.2-3)
+
+| 속성 | 값 |
+|------|---|
+| 건설 비용 | 나무x15, 돌x10 |
+| 최대 슬롯 | 3 |
+| 키 바인딩 | 4번 키 |
+
+- `OnBuilt()` → `CombatAlertQueue.RegisterBarracks()` 자동 등록
+- `OnDestroy()` → `CombatAlertQueue.UnregisterBarracks()` 자동 해제
+- `FindObjectsOfType` 금지 → 캐시 등록 패턴 사용
+
+### CombatAlertQueue (v0.2-4)
+
+경보 FIFO 큐. Gatherer의 `OnThreatDetected()`가 Monster HP를 평가한 뒤 등록.
+
+**ThreatLevel 판단 (Monster.Hp 기반):**
+
+| ThreatLevel | Monster HP | 의미 |
+|-------------|-----------|------|
+| AllNeeded | ≥ 40 | 전원 파견 필요 |
+| VeryStrong | ≥ 25 | 2명 이상 필요 |
+| Strong | ≥ 15 | 1명 이상 필요 |
+| Weak | < 15 | 스킵 가능 |
+
+**콘솔 표시 형식:**
+```
+[경보 N건 대기] 강함 | Q:1명 W:2명 E:전원 Space:스킵
+```
+
+---
+
+## v0.2 업데이트된 FSM 상태 목록
+
+```
+Idle          → 할 일 없음
+Moving        → 목적지 이동 중
+Gathering     → 자원 채집 중 (Gatherer)
+Returning     → 귀환 중
+Building      → 건설 중 (Builder)
+Fleeing       → 도주 중 (Gatherer/Builder)
+Standby       → 훈련소 대기 (Warrior 전용)
+Fighting      → 전투 중 (Warrior 전용)
+```
+
+---
+
+## v0.2 플레이어 지시 시스템 (확장)
+
+| 지시 | 방법 | 설명 |
+|------|------|------|
+| 위험 지역 파견 | 좌클릭 | 가장 가까운 파견 가능 유닛에 이동 명령 |
+| 건설 위치 지정 | 우클릭 | 선택된 건물 프리팹 배치 |
+| 경보 파견 (약) | Q키 | Warrior 1명 파견 |
+| 경보 파견 (중) | W키 | Warrior 2명 파견 |
+| 경보 파견 (강) | E키 | Warrior 전원 파견 |
+| 경보 스킵 | Space | 현재 경보 무시 |
+
+**건물 선택 키:**
+
+| 키 | 건물 |
+|----|------|
+| 1 | House |
+| 2 | Quarry |
+| 3 | TownHall |
+| 4 | Barracks |
+| 5 | Forge (v0.2-5 예정) |
+| 6 | Blacksmith (v0.2-5 예정) |
+
+---
+
+## v0.2 에디터 설정 체크리스트
+
+1. **MainCamera** — CameraController 컴포넌트 추가, MinX=-30, MaxX=30, MinY=-30, MaxY=30
+2. **Warrior 프리팹** — Warrior 컴포넌트 (WarriorHealHelper 자동 추가됨), 'Unit' 레이어
+3. **Barracks 프리팹** — Barracks 컴포넌트, _warriorPrefab 할당
+4. **PlayerController** — _barracksPrefab 추가 할당
+5. **SILVER/COPPER 노드 프리팹** — ResourceNode 컴포넌트, ResourceType.SILVER/COPPER 설정
 
 ---
 
@@ -471,9 +653,20 @@ SaveManager.cs      (빈 클래스 — v1.0 세이브/로드)
 | Week 5 | MessageBus + 다중 Gatherer + 예약 시스템 | Gatherer 3개가 겹치지 않고 분산 채집 | ✅ 완료 |
 | Week 6 | BuilderFSM + BuildingManager | Builder가 House 건설 완료 | ✅ 완료 |
 | Week 7 | PopulationManager + 유닛 생성 | 자원 충족 시 Gatherer 자동 생성 | ✅ 완료 |
-| Week 8 | ThreatManager + Monster + Fleeing 상태 | 몬스터 등장 시 AI 도주 | ⏳ 예정 |
-| Week 9 | DangerRegistry + 플레이어 지시 2가지 | 위험 파견 거부 로직 동작 확인 | ⏳ 예정 |
-| Week 10 | Town Hall + 승리/패배 조건 + 폴리싱 | 첫 번째 플레이어블 빌드 완성 | ⏳ 예정 |
+| Week 8 | ThreatManager + Monster + Fleeing 상태 | 몬스터 등장 시 AI 도주 | ✅ 완료 |
+| Week 9 | DangerRegistry + 플레이어 지시 2가지 | 위험 파견 거부 로직 동작 확인 | ✅ 완료 |
+| Week 10 | Town Hall + 승리/패배 조건 + 폴리싱 | 첫 번째 플레이어블 빌드 완성 | ✅ 완료 |
+| v0.2-1 | CameraController (엣지 스크롤링) | 카메라 맵 범위 내 이동 | ✅ 완료 |
+| v0.2-2 | ResourceType 확장 (SILVER/COPPER) | 구리/은 노드 채집 동작 | ✅ 완료 |
+| v0.2-3 | Barracks + Warrior FSM + WarriorHealHelper | Warrior 파견/전투/귀환/회복 동작 | ✅ 완료 |
+| v0.2-4 | OnThreatDetected + CombatAlertQueue | Q/W/E/Space 경보 파견 동작 | ✅ 완료 |
+| v0.2-5 | 무기 시스템 (WeaponType + Forge + Blacksmith) | 무기 제작 후 Warrior 능력치 적용 | ✅ 완료 |
+| 첫 빌드 | 플레이어블 .exe 빌드 | 실행 가능 확인 (UI/경계선 미구현) | ✅ 완료 |
+| GOAP 1단계 | GOAP 레이어 추가 (FSM 유지) | GoapAgent 부착 후 Goal 변경 로그 확인 | ✅ 완료 |
+| v0.2-6 | AI 정보 패널 (유닛 클릭 → 로그) | 클릭 시 유닛 상태 콘솔 출력 | ⏳ 예정 |
+| GOAP 2단계 | Gatherer FSM → GoapAction 교체 | Gatherer 동작 동일, FSM 코드 제거 | ⏳ 예정 |
+| GOAP 3단계 | Builder / Warrior 동일 적용 | 전체 유닛 GOAP 전환 | ⏳ 예정 |
+| GOAP 4단계 | GOAP 래퍼 제거 | FSM 완전 소멸 | ⏳ 예정 |
 
 ---
 

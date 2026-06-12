@@ -4,6 +4,7 @@
 // 사용법: 빈 GameObject "GameManager"에 컴포넌트로 추가. Inspector에서 시작 자원 수치 확인.
 // 의존성: ResourceManager (동일 GameObject에 자동 추가됨)
 // GDD   : §11 GameManager / R-002 Tick 0.5s / Week 2 시작 자원 세팅
+//         §v0.2-5 구리/은 자원 추가 (무기 제작용)
 // =============================================================================
 
 using System.Collections;
@@ -51,6 +52,13 @@ namespace AIVillage.Core
         [SerializeField, Tooltip("게임 시작 시 보유 돌 수량. GDD: 8")]
         private int _startingStone = 8; // GDD
 
+        [Header("시작 자원 — 무기 제작용 (GDD §v0.2-5)")]
+        [SerializeField, Tooltip("게임 시작 시 보유 구리 수량. 무기 제작에 사용. GDD: 0")]
+        private int _startingCopper = 0; // 기획서 수치: 시작 구리 0 (채굴로 획득)
+
+        [SerializeField, Tooltip("게임 시작 시 보유 은 수량. 무기 제작에 사용. GDD: 0")]
+        private int _startingSilver = 0; // 기획서 수치: 시작 은 0 (채굴로 획득)
+
         [Header("Tick 설정 (GDD R-002)")]
         [SerializeField, Tooltip("Tick 간격(초). GDD R-002: 0.5s")]
         private float _tickInterval = 0.5f; // GDD R-002
@@ -65,6 +73,12 @@ namespace AIVillage.Core
 
         [SerializeField, Tooltip("House 완공 시 자동으로 설정됨. 0이면 House 미건설 상태.")]
         private float _safeZoneRadius = 0f;
+
+        [Header("자원 창고 (Warehouse)")]
+        [SerializeField, Tooltip("Warehouse 완공 시 자동 설정됨. 직접 수정 불필요.")]
+        private Vector2 _warehousePosition = Vector2.zero;
+        [SerializeField, Tooltip("Warehouse 완공 여부. 완공 전에는 Gatherer가 BasePosition으로 귀환.")]
+        private bool _hasWarehouse = false;
 
         [Header("유닛 자동 스폰 (GDD Week 7)")]
         [SerializeField, Tooltip("자동 스폰할 Gatherer 프리팹. Inspector에서 할당 필요.")]
@@ -89,6 +103,11 @@ namespace AIVillage.Core
 
         private int _currentWood;
         private int _currentStone;
+
+        // ── v0.2-5 추가: 무기 제작용 자원 ──
+        private int _currentCopper; // 구리 — AlloyBlade 제작 비용 (Copper 5)
+        private int _currentSilver; // 은   — AlloyBlade 제작 비용 (Silver 3)
+
         private bool  _isGameOver;
         private float _lastSpawnTime = -999f;
         private Coroutine _tickCoroutine;
@@ -106,6 +125,12 @@ namespace AIVillage.Core
 
         /// <summary>현재 돌 보유량.</summary>
         public int CurrentStone => _currentStone;
+
+        /// <summary>현재 구리 보유량. (GDD §v0.2-5 무기 제작용)</summary>
+        public int CurrentCopper => _currentCopper;
+
+        /// <summary>현재 은 보유량. (GDD §v0.2-5 무기 제작용)</summary>
+        public int CurrentSilver => _currentSilver;
 
         /// <summary>기지(House) 월드 좌표. House 완공 시 RegisterSafeZone()으로 자동 설정됨.</summary>
         public Vector2 BasePosition
@@ -143,6 +168,22 @@ namespace AIVillage.Core
         /// 승리 조건 UI 등 외부에서 읽기 전용으로 사용한다.
         /// </summary>
         public bool IsTownHallBuilt => _townHallBuilt;
+
+        /// <summary>Warehouse 완공 여부. RegisterWarehouse() 호출 이후 true.</summary>
+        public bool HasWarehouse => _hasWarehouse;
+
+        /// <summary>
+        /// 자원 창고(Warehouse) 위치. Gatherer가 채집 후 납품하러 이동하는 지점.
+        /// HasWarehouse=false이면 BasePosition을 대신 사용한다.
+        /// </summary>
+        public Vector2 WarehousePosition => _warehousePosition;
+
+        /// <summary>
+        /// Gatherer가 우선적으로 채집해야 할 자원 종류.
+        /// Builder.StartConstruction() 실패 시 RequestResource()로 갱신된다.
+        /// 기본값 WOOD (가장 자주 필요한 자원).
+        /// </summary>
+        public ResourceType PreferredGatherType { get; private set; } = ResourceType.WOOD;
 
         #endregion
 
@@ -213,12 +254,16 @@ namespace AIVillage.Core
         /// <summary>GDD 수치로 시작 자원을 초기화하고 Tick 루프를 시작한다.</summary>
         private void InitializeResources()
         {
-            _currentWood  = _startingWood;
-            _currentStone = _startingStone;
-            _isGameOver   = false;
+            _currentWood   = _startingWood;
+            _currentStone  = _startingStone;
+            _currentCopper = _startingCopper; // v0.2-5: 구리 초기화
+            _currentSilver = _startingSilver; // v0.2-5: 은 초기화
+            _isGameOver    = false;
 
 #if UNITY_EDITOR
-            Debug.Log($"[GameManager] 시작 자원 세팅 완료 — 나무: {_currentWood}, 돌: {_currentStone}");
+            Debug.Log($"[GameManager] 시작 자원 세팅 완료 — " +
+                      $"나무: {_currentWood}, 돌: {_currentStone}, " +
+                      $"구리: {_currentCopper}, 은: {_currentSilver}");
 #endif
 
             StartTick();
@@ -256,6 +301,7 @@ namespace AIVillage.Core
             CheckAutoSpawn();
             CheckThreatForAllUnits(); // Week 8: 몬스터 위협 감지
             CheckWinLoseCondition();
+            MessageBus?.Publish("game.tick", null); // GOAP 1단계: GoapAgent.OnTick 트리거
         }
 
         #endregion
@@ -386,12 +432,14 @@ namespace AIVillage.Core
 #if UNITY_EDITOR
         // ── 테스트 전용 ContextMenu (플레이 모드에서 Inspector 기어 아이콘 → 항목 클릭) ──
 
-        [ContextMenu("[테스트] 자원 충전 (나무+100 돌+100)")]
+        [ContextMenu("[테스트] 자원 충전 (나무+100 돌+100 구리+50 은+50)")]
         private void DebugAddResources()
         {
             if (!Application.isPlaying) { Debug.LogWarning("[테스트] 플레이 모드에서만 실행 가능"); return; }
-            AddResource(ResourceType.WOOD,  100);
-            AddResource(ResourceType.STONE, 100);
+            AddResource(ResourceType.WOOD,   100);
+            AddResource(ResourceType.STONE,  100);
+            AddResource(ResourceType.COPPER, 50);
+            AddResource(ResourceType.SILVER, 50);
         }
 
         [ContextMenu("[테스트] 승리 조건 시뮬레이션")]
@@ -446,10 +494,48 @@ namespace AIVillage.Core
         /// </summary>
         public bool IsInSafeZone(Vector2 pos)
         {
-            float r = _safeZoneRadius > 0f ? _safeZoneRadius : 1f;
+            float r  = _safeZoneRadius > 0f ? _safeZoneRadius : 1f;
             float dx = pos.x - _basePosition.x;
             float dy = pos.y - _basePosition.y;
             return (dx * dx + dy * dy) <= r * r;
+        }
+
+        #endregion
+
+        #region Warehouse API
+
+        /// <summary>
+        /// Warehouse 완공 시 호출된다. 자원 납품 지점을 등록한다.
+        /// 이후 Gatherer는 BasePosition 대신 WarehousePosition으로 귀환하여 자원을 납품한다.
+        /// </summary>
+        public void RegisterWarehouse(Vector2 pos)
+        {
+            _warehousePosition = pos;
+            _hasWarehouse      = true;
+#if UNITY_EDITOR
+            Debug.Log($"[GameManager] Warehouse 등록 — 납품 지점: {pos}");
+#endif
+        }
+
+        /// <summary>Warehouse 파괴 시 호출된다. Gatherer는 다시 BasePosition으로 귀환한다.</summary>
+        public void UnregisterWarehouse()
+        {
+            _hasWarehouse = false;
+#if UNITY_EDITOR
+            Debug.Log("[GameManager] Warehouse 해제 — 납품 지점이 BasePosition으로 복귀.");
+#endif
+        }
+
+        /// <summary>
+        /// 주어진 좌표가 Warehouse 도착 반경(1.5f) 내부인지 반환한다.
+        /// Gatherer가 납품 완료 여부를 판단할 때 사용한다.
+        /// </summary>
+        public bool IsAtWarehouse(Vector2 pos)
+        {
+            if (!_hasWarehouse) return false;
+            float dx = pos.x - _warehousePosition.x;
+            float dy = pos.y - _warehousePosition.y;
+            return (dx * dx + dy * dy) <= 2.25f; // 반경 1.5f (0.2f 도착 임계값 + 격자 오차 고려)
         }
 
         #endregion
@@ -477,12 +563,30 @@ namespace AIVillage.Core
                     Debug.Log($"[GameManager] 나무 +{amount} → 총 {_currentWood}");
 #endif
                     break;
+
                 case ResourceType.STONE:
                     _currentStone += amount;
 #if UNITY_EDITOR
                     Debug.Log($"[GameManager] 돌 +{amount} → 총 {_currentStone}");
 #endif
                     break;
+
+                // ── v0.2-5 추가: 구리 ──
+                case ResourceType.COPPER:
+                    _currentCopper += amount;
+#if UNITY_EDITOR
+                    Debug.Log($"[GameManager] 구리 +{amount} → 총 {_currentCopper}");
+#endif
+                    break;
+
+                // ── v0.2-5 추가: 은 ──
+                case ResourceType.SILVER:
+                    _currentSilver += amount;
+#if UNITY_EDITOR
+                    Debug.Log($"[GameManager] 은 +{amount} → 총 {_currentSilver}");
+#endif
+                    break;
+
                 default:
                     Debug.LogWarning($"[GameManager] AddResource — 알 수 없는 ResourceType: {type}");
                     break;
@@ -531,6 +635,32 @@ namespace AIVillage.Core
 #endif
                     return true;
 
+                // ── v0.2-5 추가: 구리 ──
+                case ResourceType.COPPER:
+                    if (_currentCopper < amount)
+                    {
+                        Debug.LogWarning($"[GameManager] 구리 부족 — 필요: {amount}, 보유: {_currentCopper}");
+                        return false;
+                    }
+                    _currentCopper -= amount;
+#if UNITY_EDITOR
+                    Debug.Log($"[GameManager] 구리 -{amount} → 총 {_currentCopper}");
+#endif
+                    return true;
+
+                // ── v0.2-5 추가: 은 ──
+                case ResourceType.SILVER:
+                    if (_currentSilver < amount)
+                    {
+                        Debug.LogWarning($"[GameManager] 은 부족 — 필요: {amount}, 보유: {_currentSilver}");
+                        return false;
+                    }
+                    _currentSilver -= amount;
+#if UNITY_EDITOR
+                    Debug.Log($"[GameManager] 은 -{amount} → 총 {_currentSilver}");
+#endif
+                    return true;
+
                 default:
                     Debug.LogWarning($"[GameManager] SpendResource — 알 수 없는 ResourceType: {type}");
                     return false;
@@ -542,10 +672,25 @@ namespace AIVillage.Core
         {
             return type switch
             {
-                ResourceType.WOOD  => _currentWood,
-                ResourceType.STONE => _currentStone,
-                _                  => 0
+                ResourceType.WOOD   => _currentWood,
+                ResourceType.STONE  => _currentStone,
+                ResourceType.COPPER => _currentCopper, // v0.2-5
+                ResourceType.SILVER => _currentSilver, // v0.2-5
+                _                   => 0
             };
+        }
+
+        /// <summary>
+        /// Builder가 건설 자원 부족 시 호출하여 Gatherer 채집 우선순위를 갱신한다.
+        /// Gatherer.SearchAndGo()가 이 값을 참조하여 해당 자원 노드를 먼저 탐색한다.
+        /// </summary>
+        public void RequestResource(ResourceType type)
+        {
+            if (PreferredGatherType == type) return;
+            PreferredGatherType = type;
+#if UNITY_EDITOR
+            Debug.Log($"[GameManager] 채집 우선순위 변경 → {type}");
+#endif
         }
 
         #endregion
