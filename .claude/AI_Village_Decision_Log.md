@@ -760,5 +760,57 @@ float loyalty            // 충성도 0~100 (현재는 100 고정)
 
 ---
 
+---
+
+## 29. GOAP 3단계 — Builder 적용 결정 (2026-06-12)
+
+**날짜:** 2026-06-12
+
+### 구조 설계 결정
+
+| 항목 | 결정 | 이유 |
+|------|------|------|
+| 별도 BuilderGoapAgent | Gatherer GoapAgent와 분리된 독립 클래스 | 각 유닛 타입이 다른 WorldState/Goal/Action을 가지므로 분리가 명확 |
+| WorldState 키 공유 | 기존 열거형 확장 (HasPendingBuilding=7, IsBuildingReserved=8 추가) | 새 타입 없이 기존 배열/플래너 인프라 재활용. Count 7→9 |
+| GoapAction.InitializeForBuilder() | virtual no-op 추가 (abstract 아님) | Gatherer 기존 Action 수정 없이 Builder Action 초기화 경로 분리 |
+| Actions 순서 | `[Flee, ConstructAction, SearchBuildingAction, Wait]` | SearchBuildingAction 앞에 ConstructAction → DFS 2단 플랜 [SearchBuilding, Construct] 보장 |
+
+### Goals / WorldState (Builder 전용)
+
+| 키 | 의미 |
+|----|------|
+| HasPendingBuilding (7) | BuildingManager에 Unbuilt 건물 존재 여부 |
+| IsBuildingReserved (8) | _targetBuilding != null |
+
+| Goal | Priority | 조건 |
+|------|---------|------|
+| Flee | 0 | HasThreat=true |
+| BuildBuilding | 1 | HasPendingBuilding=true, !HasThreat |
+| WaitForBuilding | 2 | HasPendingBuilding=false, !HasThreat |
+
+### GOAP 실행 흐름
+
+```
+game.tick → BuilderGoapAgent.OnTick → Replan → BuildBuilding
+  → [SearchBuildingAction, ConstructAction]
+  → SearchBuildingAction.Execute() → Builder.ExecuteSearchBuilding() → SearchAndBuild()
+  → Builder 이동 → OnReachDestination() → StartConstruction() → BuildRoutine 시작
+  → NotifyArrival() → SearchBuilding → Construct (index 전환)
+  → BuildRoutine 완료 → _targetBuilding=null → IsBuildingReserved=false
+  → 다음 Tick: ConstructAction.IsComplete=true → Replan → 새 사이클
+```
+
+### 자원 부족 처리 (GOAP 모드)
+- `StartConstruction()` 실패 → `_targetBuilding=null` + `Invoke(SearchAndBuild, retryDelay)`
+- NotifyArrival 미호출 → `_currentActionIndex=0` (SearchBuildingAction 유지)
+- planActive=true → changed detection Replan 차단
+- retryDelay 후 SearchAndBuild() 재호출 (P-004 가드: CurrentAction=SearchBuildingAction 확인)
+
+### Legacy FSM 호환
+- `BuilderGoapAgent` 미부착 시 기존 FSM 완전 동작 (Regression 없음)
+- 모든 콜백(OnIdle, OnFleeingExit, OnPathFailed, BuildRoutine)에 GOAP 분기 추가
+
+---
+
 *이 문서는 새로운 결정이 내려질 때마다 업데이트됩니다.*
-*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0) → 2026-05-28 Week 3~7 구현 결정 추가 → 2026-06-09 Week 8~10 + v0.2-1~v0.2-5 결정 추가 (GDD v3.0.0) → 2026-06-10 GOAP 마이그레이션 전략 확정 → 2026-06-12 GOAP 2단계 버그 수정 + Builder 개선 + Warehouse 시스템 추가 (GDD v3.1.0)*
+*버전 이력: 초기 작성 → v0.1 범위 재조정 → 확장성 전수 분석 → 2026-05-27 설계 공백 13개 전수 확정 (GDD v2.2.0) → 2026-05-28 Week 3~7 구현 결정 추가 → 2026-06-09 Week 8~10 + v0.2-1~v0.2-5 결정 추가 (GDD v3.0.0) → 2026-06-10 GOAP 마이그레이션 전략 확정 → 2026-06-12 GOAP 2단계 버그 수정 + Builder 개선 + Warehouse 시스템 추가 (GDD v3.1.0) → 2026-06-12 GOAP 3단계 Builder 완료 (GDD v3.2.0)*
